@@ -8,25 +8,26 @@
     },
     "id": "z0pzk.frame-window-counter",
     "name": "Frame Window Counter",
-    "version": "v1.0.0",
+    "version": "v2.0.0",
     "developer": "z0pzk",
-    "description": "Frame Window Counter (FB-style) with Auto & Manual modes, color-coded click circles, customizable bell pitch, S-Frames/Swifts/Multiclicks, TPS adaptation, and bot/render compatibility.",
+    "description": "Frame Window Counter (FB-style) with physics-based Auto mode, Manual marker mode, crisp world-space click circles, classic & custom bell sounds, and native GD UI.",
     "resources": {
         "files": [
-            "resources/*.wav"
+            "resources/*.wav",
+            "resources/*.png"
         ]
     },
     "settings": {
         "enabled": {
             "type": "bool",
             "name": "Enable Mod",
-            "description": "Toggle the entire Frame Window Counter overlay and logic.",
+            "description": "Toggle the entire Frame Window Counter mod.",
             "default": true
         },
         "mode": {
             "type": "string",
             "name": "Counter Mode",
-            "description": "Choose between automatic real-time estimation (auto) and manual marker playback (manual).",
+            "description": "Auto (live physics window estimation) or Manual (marker playback).",
             "default": "auto",
             "one-of": [
                 "auto",
@@ -35,27 +36,27 @@
         },
         "ref-fps": {
             "type": "int",
-            "name": "Reference FPS / Scale",
-            "description": "Reference FPS used to display frame counts (e.g. 6000 FPS -> 100F = 60Hz, <76F = ~80Hz FP).",
-            "default": 6000,
-            "min": 60,
+            "name": "Reference FPS",
+            "description": "Target FPS scale for frame counts (e.g. 60, 240, 360, 6000).",
+            "default": 240,
+            "min": 30,
             "max": 100000
         },
         "auto-tps-adapt": {
             "type": "bool",
             "name": "Adapt to Live TPS",
-            "description": "Automatically measure live physics TPS from game delta time (bot & speedhack safe).",
+            "description": "Measure live physics TPS from game delta time (bot & speedhack safe).",
             "default": true
         },
         "show-circles": {
             "type": "bool",
             "name": "Show Click Circles",
-            "description": "Render animated color-coded rings over the player on every click.",
+            "description": "Spawn color-coded rings at every click position in the level.",
             "default": true
         },
         "circle-scale": {
             "type": "float",
-            "name": "Circle Scale",
+            "name": "Circle Size",
             "description": "Size multiplier for click circles.",
             "default": 1.0,
             "min": 0.4,
@@ -64,13 +65,13 @@
         "show-circle-label": {
             "type": "bool",
             "name": "Show Frame Label on Circle",
-            "description": "Display frame count and click tag next to each click circle.",
+            "description": "Display the frame window text above each click ring.",
             "default": true
         },
         "show-hud": {
             "type": "bool",
             "name": "Show Bottom-Left HUD",
-            "description": "Display the bottom-left frame counter stats card.",
+            "description": "Display the bottom-left frame counter overlay.",
             "default": true
         },
         "show-percentages": {
@@ -82,13 +83,25 @@
         "show-special-stats": {
             "type": "bool",
             "name": "Show S-Frames / Swifts / Multiclicks",
-            "description": "Track and display S-Frames, Swift clicks, and Multiclicks in the HUD.",
-            "default": true
+            "description": "Show special click counters in the HUD.",
+            "default": false
+        },
+        "detect-swifts": {
+            "type": "bool",
+            "name": "Detect Swift Clicks",
+            "description": "Enable Swift click detection on quick press-release inputs.",
+            "default": false
+        },
+        "detect-multiclicks": {
+            "type": "bool",
+            "name": "Detect Multiclicks",
+            "description": "Enable Multiclick tagging on rapid consecutive clicks.",
+            "default": false
         },
         "show-banner": {
             "type": "bool",
-            "name": "Show Intro Showcase Banner",
-            "description": "Show the level info & color legend banner at the start of each attempt.",
+            "name": "Show Intro Banner",
+            "description": "Show the level info & legend banner at the start of an attempt.",
             "default": true
         },
         "banner-duration": {
@@ -101,44 +114,51 @@
         },
         "banner-comment": {
             "type": "string",
-            "name": "Banner Comment / Tag",
-            "description": "Custom subtitle shown next to level name (e.g. Open Window Top 1).",
-            "default": "Open Window Top 1"
+            "name": "Banner Comment",
+            "description": "Optional comment shown next to the level name (leave empty to hide).",
+            "default": ""
         },
         "show-raw-precision": {
             "type": "bool",
-            "name": "Show Raw Precision Line",
-            "description": "Show the precision badge line inside the intro showcase banner.",
+            "name": "Show Precision Line",
+            "description": "Show the optional precision text line inside the intro banner.",
             "default": true
         },
         "raw-precision-text": {
             "type": "string",
-            "name": "Raw Precision Text",
-            "description": "Custom precision label shown in the intro banner.",
-            "default": "Raw Precision: 240Hz in-game"
+            "name": "Precision Text",
+            "description": "Optional precision text in the intro banner (leave empty to hide).",
+            "default": ""
         },
         "sound-enabled": {
             "type": "bool",
             "name": "Enable Bell Sounds",
-            "description": "Play a bell chime sound on clicks.",
+            "description": "Play a bell sound on clicks.",
             "default": true
         },
         "sound-preset": {
             "type": "string",
-            "name": "Bell Sound Preset",
-            "description": "Select the bell chime timbre.",
-            "default": "crystal",
+            "name": "Bell Sound",
+            "description": "Choose built-in bell or custom sound file.",
+            "default": "classic",
             "one-of": [
-                "crystal",
-                "soft",
+                "classic",
+                "fb",
+                "chime",
                 "tick",
-                "deep"
+                "custom"
             ]
+        },
+        "custom-sound-file": {
+            "type": "string",
+            "name": "Custom Sound File",
+            "description": "Filename inside the mod sounds folder (or full path to .wav/.mp3/.ogg).",
+            "default": ""
         },
         "sound-volume": {
             "type": "float",
             "name": "Bell Volume",
-            "description": "Volume multiplier for bell chimes.",
+            "description": "Volume multiplier for bell sounds.",
             "default": 0.75,
             "min": 0.0,
             "max": 1.0
@@ -146,45 +166,21 @@
         "sound-pitch": {
             "type": "float",
             "name": "Bell Base Pitch",
-            "description": "Base playback pitch multiplier for bell chimes.",
+            "description": "Base pitch multiplier for bell sounds.",
             "default": 1.0,
             "min": 0.4,
             "max": 2.5
         },
         "dynamic-pitch": {
             "type": "bool",
-            "name": "Dynamic Pitch by Tightness",
-            "description": "Automatically shift pitch higher on tighter frame windows.",
+            "name": "Auto Pitch by Difficulty",
+            "description": "Raise pitch automatically on tighter frame windows.",
             "default": true
-        },
-        "swift-threshold-ms": {
-            "type": "float",
-            "name": "Swift Click Threshold (ms)",
-            "description": "Maximum hold duration in ms to classify a click as a Swift click.",
-            "default": 33.33,
-            "min": 1.0,
-            "max": 120.0
-        },
-        "multiclick-window-ms": {
-            "type": "float",
-            "name": "Multiclick Window (ms)",
-            "description": "Maximum time between clicks in ms to count as a Multiclick.",
-            "default": 135.0,
-            "min": 20.0,
-            "max": 350.0
-        },
-        "auto-sensitivity": {
-            "type": "float",
-            "name": "Auto Estimator Sensitivity",
-            "description": "Calibration multiplier for automatic hitbox-gap frame window estimation.",
-            "default": 1.0,
-            "min": 0.25,
-            "max": 3.0
         },
         "capture-to-manual": {
             "type": "bool",
             "name": "Capture Clicks to Manual List",
-            "description": "Automatically record clicks from your run/bot into the Manual Markers list.",
+            "description": "Record clicks from your run/bot into the Manual Markers list.",
             "default": false
         }
     }

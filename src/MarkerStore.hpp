@@ -13,7 +13,7 @@ namespace fwc {
 struct ManualMarker {
     float x = 0.0f;
     double timeSec = 0.0;
-    double frames = 75.0;
+    double frames = 1.0;
     ClickKind kind = ClickKind::Normal;
     bool triggered = false;
 };
@@ -92,7 +92,6 @@ public:
                 m.triggered = false;
                 m_markers.push_back(m);
             } catch (...) {
-                // Skip malformed line safely
             }
         }
         sortMarkers();
@@ -123,7 +122,6 @@ public:
     }
 
     void addMarker(float x, double timeSec, double frames, ClickKind kind) {
-        // Avoid accidental exact duplicate at the same X (within 1.5 units)
         for (auto& existing : m_markers) {
             if (std::fabs(existing.x - x) < 1.5f) {
                 existing.frames = std::max(0.05, frames);

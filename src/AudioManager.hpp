@@ -2,8 +2,11 @@
 
 #include <Geode/Geode.hpp>
 #include <algorithm>
+#include <cctype>
+#include <filesystem>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace fwc {
 
@@ -13,14 +16,11 @@ class AudioManager {
 private:
     std::unordered_map<std::string, FMOD::Sound*> m_cache;
 
-    std::string resolvePath(std::string const& preset) const {
-        std::string filename = "bell_crystal.wav";
-        if (preset == "soft") filename = "bell_soft.wav";
-        else if (preset == "tick") filename = "bell_tick.wav";
-        else if (preset == "deep") filename = "bell_deep.wav";
-
-        auto full = Mod::get()->getResourcesDir() / filename;
-        return full.string();
+    static std::string toLowerStr(std::string s) {
+        for (char& c : s) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        return s;
     }
 
 public:
@@ -29,13 +29,59 @@ public:
         return instance;
     }
 
-    void playBell(std::string const& preset, float volume, float pitch) {
+    std::filesystem::path getCustomSoundsDir() const {
+        auto dir = Mod::get()->getConfigDir() / "sounds";
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        return dir;
+    }
+
+    std::vector<std::string> listCustomSounds() const {
+        std::vector<std::string> out;
+        auto dir = getCustomSoundsDir();
+        std::error_code ec;
+        if (!std::filesystem::exists(dir, ec)) return out;
+
+        for (auto const& entry : std::filesystem::directory_iterator(dir, ec)) {
+            if (!entry.is_regular_file()) continue;
+            auto ext = toLowerStr(entry.path().extension().string());
+            if (ext == ".wav" || ext == ".mp3" || ext == ".ogg" || ext == ".flac") {
+                out.push_back(entry.path().filename().string());
+            }
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
+    std::string resolvePath(std::string const& preset, std::string const& customFile) const {
+        if (preset == "custom" && !customFile.empty()) {
+            std::error_code ec;
+            std::filesystem::path p(customFile);
+            if (p.is_absolute() && std::filesystem::exists(p, ec)) {
+                return p.string();
+            }
+            auto inDir = getCustomSoundsDir() / customFile;
+            if (std::filesystem::exists(inDir, ec)) {
+                return inDir.string();
+            }
+        }
+
+        std::string filename = "bell_classic.wav";
+        if (preset == "fb") filename = "bell_fb.wav";
+        else if (preset == "chime") filename = "bell_chime.wav";
+        else if (preset == "tick") filename = "bell_tick.wav";
+
+        auto full = Mod::get()->getResourcesDir() / filename;
+        return full.string();
+    }
+
+    void playBell(std::string const& preset, std::string const& customFile, float volume, float pitch) {
         if (volume <= 0.001f) return;
 
         auto* engine = FMODAudioEngine::sharedEngine();
         if (!engine) return;
 
-        std::string path = resolvePath(preset);
+        std::string path = resolvePath(preset, customFile);
         if (path.empty()) return;
 
         if (engine->m_system) {
@@ -69,7 +115,6 @@ public:
             }
         }
 
-        // Safe fallback if FMOD system channel creation fails
         engine->playEffect(path);
     }
 };
