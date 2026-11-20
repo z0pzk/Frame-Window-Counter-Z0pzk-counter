@@ -22,3 +22,9 @@ jobs:
         with:
           platform: windows
           sdk: v5.11.2
+      - name: Upload .geode artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frame-window-counter
+          path: build/*.geode
+
