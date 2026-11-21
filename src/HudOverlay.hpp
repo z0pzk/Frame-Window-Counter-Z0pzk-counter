@@ -21,8 +21,6 @@ struct WorldCircle {
     CCLabelBMFont* label = nullptr;
     float x = 0.0f;
     float age = 0.0f;
-    float targetScale = 1.0f;
-    float labelTargetScale = 0.42f;
 };
 
 class HudOverlay : public CCLayer {
@@ -31,31 +29,25 @@ private:
     std::string m_levelName;
     std::vector<TierDef> m_tiers;
 
-    // World-space persistent circles attached to PlayLayer::m_objectLayer
-    CCNode* m_worldContainer = nullptr;
+    // World container inside PlayLayer::m_objectLayer (cleared in onExit)
+    Ref<CCNode> m_worldContainer;
     std::vector<WorldCircle> m_circles;
 
-    // Top-left NaN-Counter-style tier table (NO ugly background box!)
     CCNode* m_tableRoot = nullptr;
     std::vector<TierRowUI> m_rows;
 
-    // Reaction ms & Hz below the table
     CCLabelBMFont* m_lblMs = nullptr;
     CCLabelBMFont* m_lblHz = nullptr;
-
-    // Bottom-left Percentage & Raw Precision Score (2 clean white lines)
     CCLabelBMFont* m_lblPercent = nullptr;
     CCLabelBMFont* m_lblScore = nullptr;
-
-    // Top-right subtle Watermark
     CCLabelBMFont* m_lblWatermark = nullptr;
 
-    // Right-side animated Comment Callout (pops in fast, fades slowly)
+    // Manual-only comment callout on the right side
     CCLabelBMFont* m_lblCallout = nullptr;
     float m_calloutAge = 999.0f;
     float m_calloutTotal = 2.2f;
 
-    // Intro Screen (NaN Counter full-screen dark splash with left title + right color legend)
+    // Intro screen
     CCNode* m_introRoot = nullptr;
     CCLayerColor* m_introBg = nullptr;
     std::vector<CCLabelBMFont*> m_introLabels;
@@ -63,15 +55,18 @@ private:
     bool m_introActive = false;
     bool m_introShownOnce = false;
 
-    // Statistical Precision Tracking
-    int m_totalClicks = 0;
-    int m_tightClicks = 0;       // clicks <= 16.67ms (60Hz FP or tighter)
-    double m_rawPrecision = 0.0; // cumulative raw precision / difficulty score
-    double m_logPassProb = 0.0;  // sum of ln(p_click) using human timing sigma
-    int m_240FpCount = 0;
+    // Live state preserved across settings reloads!
+    double m_lastMs = 0.0;
+    double m_lastHz = 0.0;
+    double m_rawPrecision = 0.0;
+    double m_logPassProb = 0.0;
 
     CCSprite* makeRingSprite() {
-        auto path = (Mod::get()->getResourcesDir() / "fwc_ring.png").string();
+        std::string fname = "fwc_ring_bold.png";
+        if (m_cfg.ringThickness == "thin") fname = "fwc_ring_thin.png";
+        else if (m_cfg.ringThickness == "thick") fname = "fwc_ring_thick.png";
+
+        auto path = (Mod::get()->getResourcesDir() / fname).string();
         auto* spr = CCSprite::create(path.c_str());
         if (!spr) spr = CCSprite::createWithSpriteFrameName("d_circle_02_001.png");
         return spr;
@@ -79,11 +74,15 @@ private:
 
     CCSprite* makeGlowSprite() {
         auto path = (Mod::get()->getResourcesDir() / "fwc_glow.png").string();
-        auto* spr = CCSprite::create(path.c_str());
-        return spr;
+        return CCSprite::create(path.c_str());
     }
 
-    void buildLeftHud() {
+    void buildLeftHud(bool preserveCounts) {
+        std::vector<int> oldCounts;
+        if (preserveCounts) {
+            for (auto const& r : m_rows) oldCounts.push_back(r.count);
+        }
+
         if (m_tableRoot) {
             m_tableRoot->removeFromParent();
             m_tableRoot = nullptr;
@@ -111,8 +110,12 @@ private:
         float curY = topY;
 
         if (m_cfg.showTierTable) {
-            for (auto const& t : m_tiers) {
+            for (size_t i = 0; i < m_tiers.size(); ++i) {
+                auto const& t = m_tiers[i];
                 TierRowUI row;
+                if (preserveCounts && oldCounts.size() == m_tiers.size()) {
+                    row.count = oldCounts[i];
+                }
 
                 row.nameLbl = CCLabelBMFont::create(t.label.c_str(), "bigFont.fnt");
                 row.nameLbl->setAnchorPoint({ 0.0f, 0.5f });
@@ -124,12 +127,12 @@ private:
                 row.glowSpr = makeGlowSprite();
                 if (row.glowSpr) {
                     row.glowSpr->setPosition({ countX + 6.0f, curY });
-                    row.glowSpr->setScale(0.32f);
+                    row.glowSpr->setScale(0.34f);
                     row.glowSpr->setOpacity(0);
                     m_tableRoot->addChild(row.glowSpr, 1);
                 }
 
-                row.countLbl = CCLabelBMFont::create("0", "bigFont.fnt");
+                row.countLbl = CCLabelBMFont::create(fmt::format("{}", row.count).c_str(), "bigFont.fnt");
                 row.countLbl->setAnchorPoint({ 0.0f, 0.5f });
                 row.countLbl->setScale(0.38f);
                 row.countLbl->setColor(t.color);
@@ -141,18 +144,17 @@ private:
             }
         }
 
-        // Reaction time (ms) and Hz right underneath the tier table
         if (m_cfg.showMsHz) {
             float msY = m_cfg.showTierTable ? (curY - 6.0f) : (winSize.height - 20.0f);
 
-            m_lblMs = CCLabelBMFont::create("0.00ms", "bigFont.fnt");
+            m_lblMs = CCLabelBMFont::create(fmt::format("{:.2f}ms", m_lastMs).c_str(), "bigFont.fnt");
             m_lblMs->setAnchorPoint({ 0.0f, 0.5f });
             m_lblMs->setScale(0.40f);
             m_lblMs->setColor(ccc3(255, 255, 255));
             m_lblMs->setPosition({ leftX, msY });
             m_tableRoot->addChild(m_lblMs, 2);
 
-            m_lblHz = CCLabelBMFont::create("0Hz", "bigFont.fnt");
+            m_lblHz = CCLabelBMFont::create(fmt::format("{:.0f}Hz", std::min(m_lastHz, 9999.0)).c_str(), "bigFont.fnt");
             m_lblHz->setAnchorPoint({ 0.0f, 0.5f });
             m_lblHz->setScale(0.40f);
             m_lblHz->setColor(ccc3(255, 255, 255));
@@ -160,7 +162,6 @@ private:
             m_tableRoot->addChild(m_lblHz, 2);
         }
 
-        // Bottom-left: ONLY the 2 clean white numbers (Percentage & Raw Precision Score)
         if (m_cfg.showBottomStats) {
             m_lblPercent = CCLabelBMFont::create("100.00%", "bigFont.fnt");
             m_lblPercent->setAnchorPoint({ 0.0f, 0.5f });
@@ -175,27 +176,28 @@ private:
             m_lblScore->setColor(ccc3(255, 255, 255));
             m_lblScore->setPosition({ leftX, 15.0f });
             m_tableRoot->addChild(m_lblScore, 2);
+            updateBottomNumbers();
         }
 
-        // Top-right subtle Watermark (like NAN COUNTER)
+        // Top-CENTER watermark (clean & centered!)
         if (m_cfg.showWatermark && !m_cfg.watermarkText.empty()) {
             m_lblWatermark = CCLabelBMFont::create(m_cfg.watermarkText.c_str(), "bigFont.fnt");
-            m_lblWatermark->setAnchorPoint({ 1.0f, 0.5f });
+            m_lblWatermark->setAnchorPoint({ 0.5f, 0.5f });
             m_lblWatermark->setScale(0.32f);
             m_lblWatermark->setColor(ccc3(255, 255, 255));
-            m_lblWatermark->setOpacity(115);
-            m_lblWatermark->setPosition({ winSize.width - 12.0f, winSize.height - 28.0f });
+            m_lblWatermark->setOpacity(125);
+            m_lblWatermark->setPosition({ winSize.width * 0.5f, winSize.height - 24.0f });
             m_tableRoot->addChild(m_lblWatermark, 2);
         }
 
-        // Right-side Comment Callout (like "11TH 240HZ FRAME PERFECT")
+        // Right-side manual comment callout
         m_lblCallout = CCLabelBMFont::create("", "bigFont.fnt");
         m_lblCallout->setAnchorPoint({ 1.0f, 0.5f });
         m_lblCallout->setAlignment(kCCTextAlignmentRight);
         m_lblCallout->setScale(0.38f);
         m_lblCallout->setColor(ccc3(255, 255, 255));
         m_lblCallout->setOpacity(0);
-        m_lblCallout->setPosition({ winSize.width - 14.0f, winSize.height - 62.0f });
+        m_lblCallout->setPosition({ winSize.width - 14.0f, winSize.height - 54.0f });
         m_tableRoot->addChild(m_lblCallout, 4);
     }
 
@@ -219,9 +221,7 @@ private:
         m_introBg = CCLayerColor::create(ccc4(0, 0, 0, 215), winSize.width, winSize.height);
         m_introRoot->addChild(m_introBg, 0);
 
-        // Left column: Level Name, optional Subtitle, Counter Title, optional Precision line
         float lx = 26.0f;
-
         auto addIntroLbl = [&](std::string const& txt, float x, float y, float scale, ccColor3B col, bool rightAlign) {
             auto* l = CCLabelBMFont::create(txt.c_str(), "bigFont.fnt");
             l->setAnchorPoint({ rightAlign ? 1.0f : 0.0f, 0.5f });
@@ -254,7 +254,6 @@ private:
             pLbl->limitLabelWidth(winSize.width * 0.46f, 0.34f, 0.18f);
         }
 
-        // Right column: Exact color legend of tiers
         float rx = winSize.width - 22.0f;
         std::string header = m_cfg.cbfMode
             ? fmt::format("{}HZ \"FRAMES\" W/ CBF", m_cfg.refFps)
@@ -266,7 +265,7 @@ private:
         stepY = std::min(stepY, 32.0f);
 
         for (auto const& t : m_tiers) {
-            if (t.maxF > 1e6 && m_tiers.size() > 8) continue; // Keep legend crisp & uncrowded like NaN Counter!
+            if (t.maxF > 1e6 && m_tiers.size() > 8) continue;
             addIntroLbl(t.introDesc, rx, ry, 0.34f, t.color, true);
             addIntroLbl(t.introMs, rx, ry - 12.0f, 0.30f, t.color, true);
             ry -= stepY;
@@ -278,12 +277,10 @@ private:
 
     void updateBottomNumbers() {
         if (m_lblPercent) {
-            // Live estimated pass consistency % (starts at 100%, drops naturally on tight frame perfects)
             double consistencyPct = std::exp(m_logPassProb) * 100.0;
             m_lblPercent->setString(fmt::format("{:.2f}%", std::clamp(consistencyPct, 0.0, 100.0)).c_str());
         }
         if (m_lblScore) {
-            // Raw Precision difficulty accumulation score (like NaN Counter's bottom-left number)
             m_lblScore->setString(fmt::format("{:.2f}", m_rawPrecision).c_str());
         }
     }
@@ -305,26 +302,31 @@ public:
         m_cfg = ModConfig::load();
 
         ensureWorldContainer(worldParent);
-        buildLeftHud();
+        buildLeftHud(false);
         buildIntroScreen(false);
         return true;
     }
 
-    // Lazily guarantee world container is ALWAYS attached to active PlayLayer::m_objectLayer!
+    void onExit() override {
+        m_circles.clear();
+        m_worldContainer = nullptr;
+        CCLayer::onExit();
+    }
+
     void ensureWorldContainer(CCNode* worldParent) {
         if (!worldParent) return;
         if (m_worldContainer && m_worldContainer->getParent() == worldParent) return;
 
         m_circles.clear();
-        m_worldContainer = CCNode::create();
-        worldParent->addChild(m_worldContainer, 2000);
+        auto* node = CCNode::create();
+        worldParent->addChild(node, 2000);
+        m_worldContainer = node;
     }
 
     void reloadConfig(CCNode* worldParent) {
         m_cfg = ModConfig::load();
         ensureWorldContainer(worldParent);
-        buildLeftHud();
-        updateBottomNumbers();
+        buildLeftHud(true);
     }
 
     void resetAttempt(CCNode* worldParent) {
@@ -332,11 +334,10 @@ public:
         ensureWorldContainer(worldParent);
         clearCircles();
 
-        m_totalClicks = 0;
-        m_tightClicks = 0;
+        m_lastMs = 0.0;
+        m_lastHz = 0.0;
         m_rawPrecision = 0.0;
         m_logPassProb = 0.0;
-        m_240FpCount = 0;
         m_calloutAge = 999.0f;
 
         for (auto& r : m_rows) {
@@ -361,23 +362,36 @@ public:
         m_circles.clear();
     }
 
-    void showCallout(std::string const& text, ccColor3B color) {
+    // Prune circles ahead of player on savestate / checkpoint rewind!
+    void pruneCirclesAfter(float x) {
+        for (size_t i = 0; i < m_circles.size(); ) {
+            if (m_circles[i].x >= x - 2.0f) {
+                if (m_circles[i].ring) m_circles[i].ring->removeFromParent();
+                if (m_circles[i].label) m_circles[i].label->removeFromParent();
+                m_circles.erase(m_circles.begin() + static_cast<ptrdiff_t>(i));
+            } else {
+                ++i;
+            }
+        }
+    }
+
+    void showManualCallout(std::string const& text, ccColor3B color) {
         if (!m_cfg.enabled || !m_lblCallout || text.empty()) return;
         m_lblCallout->setString(text.c_str());
         m_lblCallout->setColor(color);
         m_lblCallout->setOpacity(255);
         m_calloutAge = 0.0f;
-        m_calloutTotal = std::max(0.6f, m_cfg.commentFadeSec);
+        m_calloutTotal = std::max(0.5f, m_cfg.commentFadeSec);
     }
 
-    void onClickTriggered(CCNode* worldParent, CCPoint levelPos, double frames, std::string const& customComment, double liveCps) {
+    void onClickTriggered(CCNode* worldParent, CCPoint levelPos, double frames, std::string const& manualComment) {
         if (!m_cfg.enabled) return;
         ensureWorldContainer(worldParent);
 
         double fps = static_cast<double>(m_cfg.refFps);
         double displayFrames = m_cfg.cbfMode ? frames : std::max(1.0, std::round(frames));
-        double ms = framesToMs(displayFrames, fps);
-        double hz = framesToHz(displayFrames, fps);
+        m_lastMs = framesToMs(displayFrames, fps);
+        m_lastHz = framesToHz(displayFrames, fps);
 
         if (m_tiers.empty()) {
             m_tiers = buildTiers(m_cfg.tableStyle, fps);
@@ -385,69 +399,43 @@ public:
         int tierIdx = findTierIndex(m_tiers, displayFrames);
         auto const& tier = m_tiers[static_cast<size_t>(tierIdx)];
 
-        // 1) Update Tier Table + Trigger Crisp White Glow Highlight!
+        // 1) Update Tier Table + Trigger Crisp White Glow Animation ONLY on the table number!
         if (tierIdx >= 0 && tierIdx < static_cast<int>(m_rows.size())) {
             auto& row = m_rows[static_cast<size_t>(tierIdx)];
             row.count++;
             if (row.countLbl) {
                 row.countLbl->setString(fmt::format("{}", row.count).c_str());
             }
-            row.glowTimer = 0.68f;
+            row.glowTimer = 0.65f;
             if (row.glowSpr) {
-                row.glowSpr->setOpacity(245);
+                row.glowSpr->setOpacity(250);
                 row.glowSpr->setScale(0.42f);
             }
         }
 
         // 2) Update Reaction ms & Hz
-        if (m_lblMs) m_lblMs->setString(fmt::format("{:.2f}ms", ms).c_str());
-        if (m_lblHz) m_lblHz->setString(fmt::format("{:.0f}Hz", std::min(hz, 9999.0)).c_str());
+        if (m_lblMs) m_lblMs->setString(fmt::format("{:.2f}ms", m_lastMs).c_str());
+        if (m_lblHz) m_lblHz->setString(fmt::format("{:.0f}Hz", std::min(m_lastHz, 9999.0)).c_str());
 
-        // 3) Update Bottom-Left Consistency % & Raw Precision Difficulty Score
-        m_totalClicks++;
-        if (ms <= 16.7) m_tightClicks++;
-
-        // Human click timing normal distribution (sigma = 8.0 ms)
-        // Probability of hitting a window of width `ms`: erf(ms / (2 * sqrt(2) * sigma))
-        double z = ms / (2.0 * 1.41421356 * 8.0);
+        // 3) Update Bottom-Left Consistency % & Raw Precision Score
+        double z = m_lastMs / (2.0 * 1.41421356 * 8.0);
         double pHit = std::clamp(std::erf(z), 0.03, 0.999);
         m_logPassProb += std::log(pHit);
 
-        // Raw Precision Difficulty Weight: tighter clicks contribute exponentially more!
-        // e.g. 22ms -> ~0.35, 12.5ms -> ~1.1, 8.3ms -> ~2.4, 4.17ms (240Hz FP) -> ~9.6, 2ms -> ~38
-        double weight = std::pow(13.0 / std::max(0.6, ms), 2.0);
+        double weight = std::pow(13.0 / std::max(0.6, m_lastMs), 2.0);
         m_rawPrecision += weight;
         updateBottomNumbers();
 
-        // 4) Callout Comment (manual comment > 240Hz FP auto-comment > high CPS spam comment)
-        if (!customComment.empty()) {
-            showCallout(customComment, tier.color);
-        } else if (m_cfg.showAutoComments) {
-            if (ms <= 4.25) {
-                m_240FpCount++;
-                std::string ord = fmt::format("{}TH", m_240FpCount);
-                if (m_240FpCount % 100 < 11 || m_240FpCount % 100 > 13) {
-                    if (m_240FpCount % 10 == 1) ord = fmt::format("{}ST", m_240FpCount);
-                    else if (m_240FpCount % 10 == 2) ord = fmt::format("{}ND", m_240FpCount);
-                    else if (m_240FpCount % 10 == 3) ord = fmt::format("{}RD", m_240FpCount);
-                }
-                showCallout(
-                    fmt::format("{} 240HZ FRAME PERFECT\n({})", ord, formatCircleNumber(displayFrames, m_cfg.cbfMode)),
-                    tier.color
-                );
-            } else if (liveCps >= 10.0) {
-                showCallout(
-                    fmt::format("{:.1f} CPS SPAM\n(WINDOW {})", liveCps, formatCircleNumber(displayFrames, m_cfg.cbfMode)),
-                    tier.color
-                );
-            }
+        // 4) Manual-ONLY comment callout
+        if (!manualComment.empty()) {
+            showManualCallout(manualComment, tier.color);
         }
 
-        // 5) Spawn BOLD NaN-Counter Circle directly in m_objectLayer!
-        if (!m_cfg.showCircles || !m_worldContainer) return;
+        // 5) Spawn STATIC Bold Circle directly in m_objectLayer (NO bounce/scale animation!)
+        auto* container = m_worldContainer.data();
+        if (!m_cfg.showCircles || !container) return;
 
-        // Keep memory clean if a huge level has hundreds of clicks
-        if (m_circles.size() > 220) {
+        if (m_circles.size() > 240) {
             auto& old = m_circles.front();
             if (old.ring) old.ring->removeFromParent();
             if (old.label) old.label->removeFromParent();
@@ -462,47 +450,44 @@ public:
         wc.ring = makeRingSprite();
         if (wc.ring) {
             float texW = std::max(16.0f, wc.ring->getContentSize().width);
-            float diameter = 36.0f * sc; // bold & clearly visible around player
-            wc.targetScale = diameter / texW;
+            float diameter = 36.0f * sc;
             wc.ring->setPosition(levelPos);
             wc.ring->setColor(tier.color);
             wc.ring->setOpacity(255);
-            wc.ring->setScale(wc.targetScale * 1.28f); // punchy pop-in!
-            m_worldContainer->addChild(wc.ring, 10);
+            wc.ring->setScale(diameter / texW); // Instant exact scale — zero animation!
+            container->addChild(wc.ring, 10);
         }
 
         if (m_cfg.showCircleLabel) {
             std::string numStr = formatCircleNumber(displayFrames, m_cfg.cbfMode);
             wc.label = CCLabelBMFont::create(numStr.c_str(), "bigFont.fnt");
-            wc.label->setAnchorPoint({ 1.0f, 0.5f }); // Right-aligned to the LEFT of the circle!
-            wc.labelTargetScale = 0.44f * std::min(1.4f, sc);
-            wc.label->setScale(wc.labelTargetScale * 1.18f);
+            wc.label->setAnchorPoint({ 1.0f, 0.5f });
+            wc.label->setScale(0.44f * std::min(1.4f, sc)); // Instant exact scale — zero animation!
             wc.label->setColor(tier.color);
             wc.label->setOpacity(255);
             wc.label->setPosition(ccp(levelPos.x - 21.0f * sc, levelPos.y));
-            m_worldContainer->addChild(wc.label, 11);
+            container->addChild(wc.label, 11);
         }
 
         m_circles.push_back(wc);
     }
 
-    // Driven purely by game dt -> 100% synced in renders, bots, and slow-mo!
     void stepSimulation(float dt, float currentPlayerX) {
         if (!m_cfg.enabled || dt <= 0.0f) return;
 
-        // Animate table glow highlights
+        // Animate table white glow highlight
         for (auto& r : m_rows) {
             if (r.glowTimer > 0.0f) {
                 r.glowTimer = std::max(0.0f, r.glowTimer - dt);
-                float p = r.glowTimer / 0.68f;
+                float p = r.glowTimer / 0.65f;
                 if (r.glowSpr) {
-                    r.glowSpr->setOpacity(static_cast<GLubyte>(p * p * 240.0f));
+                    r.glowSpr->setOpacity(static_cast<GLubyte>(p * p * 245.0f));
                     r.glowSpr->setScale(0.30f + 0.14f * p);
                 }
             }
         }
 
-        // Animate right-side callout comment (sharp pop-in, slow smooth fade-out)
+        // Animate manual comment callout
         if (m_lblCallout && m_calloutAge < m_calloutTotal) {
             m_calloutAge += dt;
             if (m_calloutAge >= m_calloutTotal) {
@@ -518,28 +503,16 @@ public:
             }
         }
 
-        // Animate circles (pop-in settle; persistent unless Persistent Circles is OFF)
+        // Prune far-behind circles (or fade if Keep Circles is OFF)
         for (size_t i = 0; i < m_circles.size(); ) {
             auto& c = m_circles[i];
             c.age += dt;
 
-            // Prune circles far behind the camera (> 900 GD units behind player) to keep FPS maxed
-            if (currentPlayerX - c.x > 950.0f) {
+            if (currentPlayerX - c.x > 1000.0f) {
                 if (c.ring) c.ring->removeFromParent();
                 if (c.label) c.label->removeFromParent();
                 m_circles.erase(m_circles.begin() + static_cast<ptrdiff_t>(i));
                 continue;
-            }
-
-            // Crisp 0.11s pop-in settle animation
-            if (c.age < 0.11f) {
-                float p = c.age / 0.11f;
-                float ease = 1.0f - (1.0f - p) * (1.0f - p);
-                if (c.ring) c.ring->setScale(c.targetScale * (1.28f - 0.28f * ease));
-                if (c.label) c.label->setScale(c.labelTargetScale * (1.18f - 0.18f * ease));
-            } else {
-                if (c.ring) c.ring->setScale(c.targetScale);
-                if (c.label) c.label->setScale(c.labelTargetScale);
             }
 
             if (!m_cfg.persistentCircles) {
@@ -557,11 +530,10 @@ public:
                     if (c.label) c.label->setOpacity(op);
                 }
             }
-
             ++i;
         }
 
-        // Animate Intro Screen fade-out on game dt
+        // Intro screen fade on game dt
         if (m_introActive && m_introRoot) {
             m_introTimer += dt;
             float holdEnd = std::max(0.4f, m_cfg.bannerDuration);

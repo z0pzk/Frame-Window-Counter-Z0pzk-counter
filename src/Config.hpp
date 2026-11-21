@@ -28,11 +28,11 @@ enum class TableStyle : int {
 };
 
 struct TierDef {
-    std::string label;     // e.g. "1-2:" or "2:"
-    std::string introDesc; // e.g. "1-2 FRAMES (<240Hz FP)"
-    std::string introMs;   // e.g. "(4.2-8.3ms)"
-    double minF;           // inclusive lower bound in Ref-FPS frames
-    double maxF;           // exclusive upper bound (large number for top bucket)
+    std::string label;
+    std::string introDesc;
+    std::string introMs;
+    double minF;
+    double maxF;
     ccColor3B color;
     float pitchOffset;
 };
@@ -47,6 +47,7 @@ struct ModConfig {
     bool showCircles = true;
     bool persistentCircles = true;
     float circleScale = 1.0f;
+    std::string ringThickness = "bold"; // thin / bold / thick
     bool showCircleLabel = true;
 
     bool showTierTable = true;
@@ -55,7 +56,6 @@ struct ModConfig {
     bool showWatermark = true;
     std::string watermarkText = "FWC COUNTER";
 
-    bool showAutoComments = true;
     float commentFadeSec = 2.2f;
 
     BannerMode bannerMode = BannerMode::FirstOnly;
@@ -85,6 +85,7 @@ struct ModConfig {
         cfg.showCircles = mod->getSettingValue<bool>("show-circles");
         cfg.persistentCircles = mod->getSettingValue<bool>("persistent-circles");
         cfg.circleScale = static_cast<float>(mod->getSettingValue<double>("circle-scale"));
+        cfg.ringThickness = mod->getSettingValue<std::string>("ring-thickness");
         cfg.showCircleLabel = mod->getSettingValue<bool>("show-circle-label");
 
         cfg.showTierTable = mod->getSettingValue<bool>("show-tier-table");
@@ -93,7 +94,6 @@ struct ModConfig {
         cfg.showWatermark = mod->getSettingValue<bool>("show-watermark");
         cfg.watermarkText = mod->getSettingValue<std::string>("watermark-text");
 
-        cfg.showAutoComments = mod->getSettingValue<bool>("show-auto-comments");
         cfg.commentFadeSec = static_cast<float>(mod->getSettingValue<double>("comment-fade-sec"));
 
         auto bm = mod->getSettingValue<std::string>("banner-mode");
@@ -127,6 +127,7 @@ struct ModConfig {
         mod->setSettingValue<bool>("show-circles", showCircles);
         mod->setSettingValue<bool>("persistent-circles", persistentCircles);
         mod->setSettingValue<double>("circle-scale", std::clamp(static_cast<double>(circleScale), 0.4, 2.5));
+        mod->setSettingValue<std::string>("ring-thickness", ringThickness);
         mod->setSettingValue<bool>("show-circle-label", showCircleLabel);
 
         mod->setSettingValue<bool>("show-tier-table", showTierTable);
@@ -135,7 +136,6 @@ struct ModConfig {
         mod->setSettingValue<bool>("show-watermark", showWatermark);
         mod->setSettingValue<std::string>("watermark-text", watermarkText);
 
-        mod->setSettingValue<bool>("show-auto-comments", showAutoComments);
         mod->setSettingValue<double>("comment-fade-sec", std::clamp(static_cast<double>(commentFadeSec), 0.5, 8.0));
 
         std::string bm = "first";
@@ -158,10 +158,9 @@ struct ModConfig {
     }
 };
 
-// Exact NaN Counter color palette (top = easiest, bottom = tightest)
 inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
     double fps = std::max(30.0, refFps);
-    double scale = fps / 240.0; // Scales buckets cleanly if user sets 60, 240, 360, 2400, 6000!
+    double scale = fps / 240.0;
 
     auto msRangeStr = [&](double loF, double hiF) -> std::string {
         double loMs = (loF / fps) * 1000.0;
@@ -184,15 +183,15 @@ inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
     if (style == TableStyle::CbfRanges) {
         struct RawBucket { double lo; double hi; ccColor3B col; float pitch; };
         const RawBucket raw[9] = {
-            { 10.0, 1e9,  ccc3(198, 154, 255), -0.14f }, // 10+: Lavender purple
-            {  8.0, 10.0, ccc3(112, 165, 255), -0.09f }, // 8-10: Royal blue
-            {  6.0,  8.0, ccc3( 96, 226, 255), -0.04f }, // 6-8: Sky cyan
-            {  5.0,  6.0, ccc3( 92, 242, 206),  0.00f }, // 5-6: Aqua mint
-            {  4.0,  5.0, ccc3(118, 244, 132),  0.05f }, // 4-5: Vivid green
-            {  3.0,  4.0, ccc3(236, 246, 104),  0.10f }, // 3-4: Yellow-green / yellow
-            {  2.0,  3.0, ccc3(255, 198,  72),  0.16f }, // 2-3: Warm gold / orange
-            {  1.0,  2.0, ccc3(255, 118,  92),  0.23f }, // 1-2: Coral red
-            {  0.0,  1.0, ccc3(255,  86, 138),  0.32f }  // 0-1: Crimson pink
+            { 10.0, 1e9,  ccc3(198, 154, 255), -0.14f },
+            {  8.0, 10.0, ccc3(112, 165, 255), -0.09f },
+            {  6.0,  8.0, ccc3( 96, 226, 255), -0.04f },
+            {  5.0,  6.0, ccc3( 92, 242, 206),  0.00f },
+            {  4.0,  5.0, ccc3(118, 244, 132),  0.05f },
+            {  3.0,  4.0, ccc3(236, 246, 104),  0.10f },
+            {  2.0,  3.0, ccc3(255, 198,  72),  0.16f },
+            {  1.0,  2.0, ccc3(255, 118,  92),  0.23f },
+            {  0.0,  1.0, ccc3(255,  86, 138),  0.32f }
         };
         for (auto const& b : raw) {
             double lo = b.lo * scale;
@@ -206,7 +205,6 @@ inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
             tiers.push_back({ lbl, desc, msRangeStr(lo, hi), lo, hi, b.col, b.pitch });
         }
     } else {
-        // Discrete style (like LIGHTmArE screenshot: 9-12, 7-8, 5-6, 4, 3, 2, 1)
         struct RawDisc { double lo; double hi; const char* lbl; ccColor3B col; float pitch; };
         const RawDisc raw[7] = {
             { 8.5, 1e9,  "9-12:", ccc3(122, 160, 255), -0.10f },
@@ -231,7 +229,6 @@ inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
 }
 
 inline int findTierIndex(std::vector<TierDef> const& tiers, double frames) {
-    // Check from tightest (bottom) up to widest (top)
     for (int i = static_cast<int>(tiers.size()) - 1; i >= 0; --i) {
         if (frames < tiers[static_cast<size_t>(i)].maxF) {
             return i;
@@ -240,17 +237,17 @@ inline int findTierIndex(std::vector<TierDef> const& tiers, double frames) {
     return 0;
 }
 
-// Format circle number WITHOUT the letter 'F' (exact NaN Counter style!)
+// Pure number without letter 'F'
 inline std::string formatCircleNumber(double frames, bool cbfMode) {
     if (!cbfMode) {
         int rounded = std::max(1, static_cast<int>(std::round(frames)));
         return fmt::format("{}", rounded);
     }
     if (frames < 2.0) {
-        return fmt::format("{:.2f}", frames); // e.g. 0.77, 1.45, 1.99
+        return fmt::format("{:.2f}", frames);
     }
     if (frames < 10.0) {
-        return fmt::format("{:.1f}", frames); // e.g. 3.0, 4.8, 7.1
+        return fmt::format("{:.1f}", frames);
     }
     return fmt::format("{:.0f}", std::round(frames));
 }

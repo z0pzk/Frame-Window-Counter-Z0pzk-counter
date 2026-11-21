@@ -8,9 +8,9 @@
     },
     "id": "z0pzk.frame-window-counter",
     "name": "Frame Window Counter",
-    "version": "v3.0.0",
+    "version": "v4.0.0",
     "developer": "z0pzk",
-    "description": "NaN-Counter-style CBF & Frame Window Counter with real survival-based Auto physics analyzer, Manual mode, persistent bold circles, tier table with glow highlights, live ms/Hz, precision stats, callout comments, and full bot/render support.",
+    "description": "Frame & CBF Window Counter with survival-peak Auto physics analyzer, Manual markers & comments, bold static click circles, glowing tier table, and full bot compatibility (Silicate, xdBot, Eclipse, CBF).",
     "resources": {
         "files": [
             "resources/*.wav",
@@ -41,7 +41,7 @@
         },
         "cbf-mode": {
             "type": "bool",
-            "name": "CBF Sub-Frame Mode",
+            "name": "CBF Decimals",
             "default": true
         },
         "table-style": {
@@ -60,7 +60,7 @@
         },
         "persistent-circles": {
             "type": "bool",
-            "name": "Persistent Circles (No Fade)",
+            "name": "Keep Circles",
             "default": true
         },
         "circle-scale": {
@@ -69,6 +69,16 @@
             "default": 1.0,
             "min": 0.4,
             "max": 2.5
+        },
+        "ring-thickness": {
+            "type": "string",
+            "name": "Ring Thickness",
+            "default": "bold",
+            "one-of": [
+                "thin",
+                "bold",
+                "thick"
+            ]
         },
         "show-circle-label": {
             "type": "bool",
@@ -92,7 +102,7 @@
         },
         "show-watermark": {
             "type": "bool",
-            "name": "Show Top-Right Watermark",
+            "name": "Show Top-Center Watermark",
             "default": true
         },
         "watermark-text": {
@@ -100,14 +110,9 @@
             "name": "Watermark Text",
             "default": "FWC COUNTER"
         },
-        "show-auto-comments": {
-            "type": "bool",
-            "name": "Show Callout Comments",
-            "default": true
-        },
         "comment-fade-sec": {
             "type": "float",
-            "name": "Comment Fade Time (sec)",
+            "name": "Manual Comment Fade (sec)",
             "default": 2.2,
             "min": 0.5,
             "max": 8.0
@@ -131,7 +136,7 @@
         },
         "banner-comment": {
             "type": "string",
-            "name": "Intro Subtitle / Comment",
+            "name": "Intro Subtitle",
             "default": ""
         },
         "raw-precision-text": {

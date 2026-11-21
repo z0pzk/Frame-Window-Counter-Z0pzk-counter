@@ -45,10 +45,10 @@ private:
     }
 
     std::filesystem::path filePathFor(std::string const& key) const {
-        auto dir = Mod::get()->getSaveDir() / "markers_v3";
+        auto dir = Mod::get()->getSaveDir() / "markers_v4";
         std::error_code ec;
         std::filesystem::create_directories(dir, ec);
-        return dir / (key + ".fc3");
+        return dir / (key + ".fc4");
     }
 
 public:
@@ -84,7 +84,7 @@ public:
             if (!std::getline(ss, segX, '|')) continue;
             if (!std::getline(ss, segY, '|')) continue;
             if (!std::getline(ss, segF, '|')) continue;
-            std::getline(ss, segC); // optional comment
+            std::getline(ss, segC);
 
             try {
                 ManualMarker m;
@@ -105,7 +105,7 @@ public:
         std::ofstream out(path, std::ios::trunc);
         if (!out.is_open()) return;
 
-        out << "# FWC v3 Markers: x|y|frames|comment\n";
+        out << "# FWC v4 Markers: x|y|frames|comment\n";
         for (auto const& m : m_markers) {
             out << m.x << "|" << m.y << "|" << m.frames << "|" << sanitizeComment(m.comment) << "\n";
         }
@@ -119,6 +119,12 @@ public:
 
     void resetTriggers() {
         for (auto& m : m_markers) m.triggered = false;
+    }
+
+    void resetTriggersAfter(float x) {
+        for (auto& m : m_markers) {
+            if (m.x >= x - 1.0f) m.triggered = false;
+        }
     }
 
     void addMarker(float x, float y, double frames, std::string const& comment = "") {
@@ -139,6 +145,12 @@ public:
         m.triggered = false;
         m_markers.push_back(m);
         sortMarkers();
+        saveCurrent();
+    }
+
+    void setCommentAt(size_t idx, std::string const& comment) {
+        if (idx >= m_markers.size()) return;
+        m_markers[idx].comment = sanitizeComment(comment);
         saveCurrent();
     }
 

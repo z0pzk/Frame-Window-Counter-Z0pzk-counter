@@ -23,13 +23,14 @@ private:
 
     int m_activeTab = 0; // 0=General, 1=HUD, 2=Audio, 3=Manual
     int m_manualPage = 0;
+    std::string m_draftMarkerComment;
 
     CCNode* m_panel = nullptr;
     CCNode* m_contentNode = nullptr;
     CCMenu* m_tabMenu = nullptr;
 
     static constexpr float kPanelW = 446.0f;
-    static constexpr float kPanelH = 290.0f;
+    static constexpr float kPanelH = 294.0f;
 
     void notifyLive() {
         m_cfg.save();
@@ -99,7 +100,7 @@ private:
         bg->setPosition({ w * 0.5f, h * 0.5f });
         root->addChild(bg, 0);
         auto* lbl = CCLabelBMFont::create(text, "bigFont.fnt");
-        lbl->setScale(0.32f);
+        lbl->setScale(0.30f);
         lbl->setPosition({ w * 0.5f, h * 0.5f + 0.5f });
         root->addChild(lbl, 1);
         return root;
@@ -176,7 +177,6 @@ private:
             addCheckboxRow(m_contentNode, menu, "Enable Mod", m_cfg.enabled, 100, leftX, topY);
             addCheckboxRow(m_contentNode, menu, "CBF Decimals", m_cfg.cbfMode, 101, rightX, topY);
 
-            // Mode buttons (Auto / Manual)
             addLabel(m_contentNode, "Mode:", leftX, topY - 32.0f, 0.36f, "goldFont.fnt");
             bool isAuto = (m_cfg.mode == CounterMode::Auto);
 
@@ -196,7 +196,6 @@ private:
             manBtn->setPosition({ leftX + 152.0f, topY - 32.0f });
             menu->addChild(manBtn);
 
-            // Direct TextInput for Ref FPS
             addLabel(m_contentNode, "Ref FPS:", rightX + 10.0f, topY - 32.0f, 0.36f, "goldFont.fnt");
             auto* fpsInput = geode::TextInput::create(78.0f, "240", "bigFont.fnt");
             fpsInput->setFilter("0123456789");
@@ -215,39 +214,52 @@ private:
             });
             m_contentNode->addChild(fpsInput, 8);
 
-            // Table Tier Style
+            // Tiers
             addLabel(m_contentNode, "Tiers:", leftX, topY - 66.0f, 0.36f, "goldFont.fnt");
             bool isCbfTbl = (m_cfg.tableStyle == TableStyle::CbfRanges);
 
             auto* cbfTblBtn = CCMenuItemSpriteExtra::create(
-                makeMiniBtn("0-1 / 1-2", 74.0f, 22.0f, isCbfTbl ? "GJ_button_01.png" : "GJ_button_04.png"),
+                makeMiniBtn("0-1 / 1-2", 70.0f, 22.0f, isCbfTbl ? "GJ_button_01.png" : "GJ_button_04.png"),
                 this, menu_selector(SettingsPopup::onTableStyleBtn)
             );
             cbfTblBtn->setTag(0);
-            cbfTblBtn->setPosition({ leftX + 94.0f, topY - 66.0f });
+            cbfTblBtn->setPosition({ leftX + 92.0f, topY - 66.0f });
             menu->addChild(cbfTblBtn);
 
             auto* discTblBtn = CCMenuItemSpriteExtra::create(
-                makeMiniBtn("1 / 2 / 3", 74.0f, 22.0f, !isCbfTbl ? "GJ_button_01.png" : "GJ_button_04.png"),
+                makeMiniBtn("1 / 2 / 3", 70.0f, 22.0f, !isCbfTbl ? "GJ_button_01.png" : "GJ_button_04.png"),
                 this, menu_selector(SettingsPopup::onTableStyleBtn)
             );
             discTblBtn->setTag(1);
-            discTblBtn->setPosition({ leftX + 174.0f, topY - 66.0f });
+            discTblBtn->setPosition({ leftX + 168.0f, topY - 66.0f });
             menu->addChild(discTblBtn);
 
-            addStepperRow(m_contentNode, menu, "Circle Size", fmt::format("{:.1f}x", m_cfg.circleScale), 200, 201, rightX, topY - 66.0f, colW);
+            // Ring Thickness (Thin / Bold / Thick — changes thickness WITHOUT changing outer size!)
+            addLabel(m_contentNode, "Ring:", rightX, topY - 66.0f, 0.36f, "goldFont.fnt");
+            const char* rKeys[3] = { "thin", "bold", "thick" };
+            const char* rLbls[3] = { "Thin", "Bold", "Thick" };
+            for (int i = 0; i < 3; ++i) {
+                bool sel = (m_cfg.ringThickness == rKeys[i]);
+                auto* rb = CCMenuItemSpriteExtra::create(
+                    makeMiniBtn(rLbls[i], 44.0f, 21.0f, sel ? "GJ_button_01.png" : "GJ_button_04.png"),
+                    this, menu_selector(SettingsPopup::onRingThicknessBtn)
+                );
+                rb->setTag(i);
+                rb->setPosition({ rightX + 74.0f + i * 48.0f, topY - 66.0f });
+                menu->addChild(rb);
+            }
 
             addCheckboxRow(m_contentNode, menu, "Click Circles", m_cfg.showCircles, 102, leftX, topY - 102.0f);
             addCheckboxRow(m_contentNode, menu, "Keep Circles", m_cfg.persistentCircles, 103, rightX, topY - 102.0f);
 
             addCheckboxRow(m_contentNode, menu, "Circle Numbers", m_cfg.showCircleLabel, 104, leftX, topY - 134.0f);
-            addCheckboxRow(m_contentNode, menu, "Auto Comments", m_cfg.showAutoComments, 105, rightX, topY - 134.0f);
+            addStepperRow(m_contentNode, menu, "Circle Size", fmt::format("{:.1f}x", m_cfg.circleScale), 200, 201, rightX, topY - 134.0f, colW);
 
             auto* tip = CCLabelBMFont::create(
-                "Auto Mode simulates real survival windows against spikes, blocks & orbs. Bot & render safe.",
+                "Compatible with Silicate, xdBot, Eclipse, CBF, Speedhack & Frame Advance.",
                 "chatFont.fnt"
             );
-            tip->setScale(0.55f);
+            tip->setScale(0.56f);
             tip->setColor(ccc3(195, 202, 214));
             tip->setPosition({ kPanelW * 0.5f, 26.0f });
             m_contentNode->addChild(tip, 3);
@@ -258,9 +270,8 @@ private:
             addCheckboxRow(m_contentNode, menu, "ms & Hz Readout", m_cfg.showMsHz, 111, rightX, topY);
 
             addCheckboxRow(m_contentNode, menu, "Bottom % / Score", m_cfg.showBottomStats, 112, leftX, topY - 28.0f);
-            addCheckboxRow(m_contentNode, menu, "Watermark", m_cfg.showWatermark, 113, rightX, topY - 28.0f);
+            addCheckboxRow(m_contentNode, menu, "Center Watermark", m_cfg.showWatermark, 113, rightX, topY - 28.0f);
 
-            // Intro Screen mode (Off / 1st Attempt / Always)
             addLabel(m_contentNode, "Intro:", leftX, topY - 60.0f, 0.36f, "goldFont.fnt");
             const char* bNames[3] = { "Off", "1st Try", "Always" };
             for (int i = 0; i < 3; ++i) {
@@ -273,9 +284,8 @@ private:
                 b->setPosition({ leftX + 76.0f + i * 58.0f, topY - 60.0f });
                 menu->addChild(b);
             }
-            addStepperRow(m_contentNode, menu, "Fade", fmt::format("{:.1f}s", m_cfg.commentFadeSec), 210, 211, rightX + 36.0f, topY - 60.0f, colW - 36.0f);
+            addStepperRow(m_contentNode, menu, "Cmt Fade", fmt::format("{:.1f}s", m_cfg.commentFadeSec), 210, 211, rightX + 20.0f, topY - 60.0f, colW - 20.0f);
 
-            // Watermark text input
             addLabel(m_contentNode, "Watermark:", leftX, topY - 94.0f, 0.36f, "goldFont.fnt");
             auto* wmInput = geode::TextInput::create(262.0f, "FWC COUNTER", "chatFont.fnt");
             wmInput->setMaxCharCount(32);
@@ -287,7 +297,6 @@ private:
             });
             m_contentNode->addChild(wmInput, 8);
 
-            // Intro Subtitle input (empty by default)
             addLabel(m_contentNode, "Subtitle:", leftX, topY - 126.0f, 0.36f, "goldFont.fnt");
             auto* subInput = geode::TextInput::create(262.0f, "Empty (optional)...", "chatFont.fnt");
             subInput->setMaxCharCount(48);
@@ -299,7 +308,6 @@ private:
             });
             m_contentNode->addChild(subInput, 8);
 
-            // Intro Bottom Line input (empty by default)
             addLabel(m_contentNode, "Bottom:", leftX, topY - 158.0f, 0.36f, "goldFont.fnt");
             auto* precInput = geode::TextInput::create(262.0f, "Empty (optional)...", "chatFont.fnt");
             precInput->setMaxCharCount(48);
@@ -374,7 +382,7 @@ private:
             m_contentNode->addChild(tip, 3);
         }
         else {
-            // MANUAL MARKER TAB (CLEAN NON-OVERLAPPING GRID!)
+            // MANUAL MARKER & COMMENT TAB
             auto& markers = MarkerStore::get().markers();
 
             addCheckboxRow(m_contentNode, menu, "Capture Clicks", m_cfg.captureToManual, 130, leftX, topY);
@@ -395,19 +403,30 @@ private:
             clrBtn->setPosition({ leftX + fullW - 35.0f, topY });
             menu->addChild(clrBtn);
 
-            constexpr int kPerPage = 5;
+            // Manual Comment input bar (attached when pressing + Mark Here or 'C' on any row!)
+            addLabel(m_contentNode, "Comment:", leftX, topY - 28.0f, 0.34f, "goldFont.fnt");
+            auto* cmtInput = geode::TextInput::create(302.0f, "Optional manual comment...", "chatFont.fnt");
+            cmtInput->setMaxCharCount(64);
+            cmtInput->setString(m_draftMarkerComment);
+            cmtInput->setPosition({ leftX + fullW - 151.0f, topY - 28.0f });
+            cmtInput->setCallback([this](std::string const& str) {
+                m_draftMarkerComment = str;
+            });
+            m_contentNode->addChild(cmtInput, 8);
+
+            constexpr int kPerPage = 4;
             int totalPages = std::max(1, static_cast<int>((markers.size() + kPerPage - 1) / kPerPage));
             m_manualPage = std::clamp(m_manualPage, 0, totalPages - 1);
 
             if (markers.empty()) {
                 auto* emptyLbl = CCLabelBMFont::create(
-                    "No manual markers for this level yet.\nEnable 'Capture Clicks' while running your bot, or press '+ Mark Here'.",
+                    "No manual markers for this level yet.\nEnable 'Capture Clicks' or press '+ Mark Here'.",
                     "chatFont.fnt"
                 );
                 emptyLbl->setAlignment(kCCTextAlignmentCenter);
-                emptyLbl->setScale(0.62f);
+                emptyLbl->setScale(0.60f);
                 emptyLbl->setColor(ccc3(205, 212, 224));
-                emptyLbl->setPosition({ kPanelW * 0.5f, topY - 82.0f });
+                emptyLbl->setPosition({ kPanelW * 0.5f, topY - 96.0f });
                 m_contentNode->addChild(emptyLbl, 3);
             } else {
                 auto tiers = buildTiers(m_cfg.tableStyle, static_cast<double>(m_cfg.refFps));
@@ -416,24 +435,23 @@ private:
 
                 for (int idx = startIdx; idx < endIdx; ++idx) {
                     int row = idx - startIdx;
-                    float ry = topY - 30.0f - row * 24.0f;
+                    float ry = topY - 58.0f - row * 24.0f;
                     auto const& mk = markers[static_cast<size_t>(idx)];
                     int ti = findTierIndex(tiers, mk.frames);
                     ccColor3B col = tiers[static_cast<size_t>(ti)].color;
 
+                    std::string cTag = mk.comment.empty() ? "" : " [C]";
                     std::string rowText = fmt::format(
-                        "#{:<2} X:{:<5.0f}  {}",
-                        idx + 1, mk.x, formatCircleNumber(mk.frames, true)
+                        "#{:<2} X:{:<5.0f} {}{}",
+                        idx + 1, mk.x, formatCircleNumber(mk.frames, true), cTag
                     );
                     auto* lbl = CCLabelBMFont::create(rowText.c_str(), "chatFont.fnt");
                     lbl->setAnchorPoint({ 0.0f, 0.5f });
-                    lbl->setScale(0.64f);
+                    lbl->setScale(0.60f);
                     lbl->setColor(col);
                     lbl->setPosition({ leftX, ry });
                     m_contentNode->addChild(lbl, 3);
 
-                    // Clean strictly spaced non-overlapping buttons on the right!
-                    // Total width used: 36 + 4 + 36 + 4 + 28 + 4 + 28 + 6 + 22 = 168px (leaves >220px for text!)
                     auto addOp = [&](const char* txt, float cx, float bw, int op, const char* tex) {
                         auto* b = CCMenuItemSpriteExtra::create(
                             makeMiniBtn(txt, bw, 19.0f, tex),
@@ -444,20 +462,22 @@ private:
                         menu->addChild(b);
                     };
 
+                    // Strictly spaced right-aligned buttons (zero overlap!)
                     float rx = leftX + fullW;
                     addOp("X",    rx -  11.0f, 22.0f, 5, "GJ_button_06.png");
-                    addOp("+1",   rx -  42.0f, 28.0f, 1, "GJ_button_05.png");
-                    addOp("-1",   rx -  74.0f, 28.0f, 0, "GJ_button_05.png");
-                    addOp("+0.1", rx - 110.0f, 36.0f, 3, "GJ_button_04.png");
-                    addOp("-0.1", rx - 150.0f, 36.0f, 2, "GJ_button_04.png");
+                    addOp("C",    rx -  37.0f, 22.0f, 4, "GJ_button_01.png");
+                    addOp("+1",   rx -  66.0f, 28.0f, 1, "GJ_button_05.png");
+                    addOp("-1",   rx -  98.0f, 28.0f, 0, "GJ_button_05.png");
+                    addOp("+0.1", rx - 134.0f, 36.0f, 3, "GJ_button_04.png");
+                    addOp("-0.1", rx - 174.0f, 36.0f, 2, "GJ_button_04.png");
                 }
             }
 
             auto* pageLbl = CCLabelBMFont::create(
-                fmt::format("Markers: {}  |  Page {}/{}", markers.size(), m_manualPage + 1, totalPages).c_str(),
+                fmt::format("Markers: {}  |  Page {}/{}  ('C' sets Comment)", markers.size(), m_manualPage + 1, totalPages).c_str(),
                 "chatFont.fnt"
             );
-            pageLbl->setScale(0.62f);
+            pageLbl->setScale(0.56f);
             pageLbl->setColor(ccc3(210, 218, 230));
             pageLbl->setPosition({ kPanelW * 0.5f, 26.0f });
             m_contentNode->addChild(pageLbl, 3);
@@ -499,6 +519,13 @@ private:
         applyAndRebuild();
     }
 
+    void onRingThicknessBtn(CCObject* sender) {
+        const char* rKeys[3] = { "thin", "bold", "thick" };
+        int idx = std::clamp(static_cast<CCNode*>(sender)->getTag(), 0, 2);
+        m_cfg.ringThickness = rKeys[idx];
+        applyAndRebuild();
+    }
+
     void onBannerModeBtn(CCObject* sender) {
         int v = std::clamp(static_cast<CCNode*>(sender)->getTag(), 0, 2);
         m_cfg.bannerMode = static_cast<BannerMode>(v);
@@ -512,7 +539,6 @@ private:
             case 102: m_cfg.showCircles = !m_cfg.showCircles; break;
             case 103: m_cfg.persistentCircles = !m_cfg.persistentCircles; break;
             case 104: m_cfg.showCircleLabel = !m_cfg.showCircleLabel; break;
-            case 105: m_cfg.showAutoComments = !m_cfg.showAutoComments; break;
             case 110: m_cfg.showTierTable = !m_cfg.showTierTable; break;
             case 111: m_cfg.showMsHz = !m_cfg.showMsHz; break;
             case 112: m_cfg.showBottomStats = !m_cfg.showBottomStats; break;
@@ -577,7 +603,7 @@ private:
     void onManualActionBtn(CCObject* sender) {
         int tag = static_cast<CCNode*>(sender)->getTag();
         if (tag == 1) {
-            MarkerStore::get().addMarker(m_currentPlayerX, m_currentPlayerY, 1.0, "");
+            MarkerStore::get().addMarker(m_currentPlayerX, m_currentPlayerY, 1.0, m_draftMarkerComment);
         } else if (tag == 2) {
             MarkerStore::get().clearAll();
             m_manualPage = 0;
@@ -598,6 +624,10 @@ private:
             case 1: mk.frames = std::min(10000.0, mk.frames + 1.0); break;
             case 2: mk.frames = std::max(0.05, mk.frames - 0.1); break;
             case 3: mk.frames = std::min(10000.0, mk.frames + 0.1); break;
+            case 4:
+                MarkerStore::get().setCommentAt(static_cast<size_t>(idx), m_draftMarkerComment);
+                rebuildContent();
+                return;
             case 5:
                 MarkerStore::get().removeAt(static_cast<size_t>(idx));
                 rebuildContent();
