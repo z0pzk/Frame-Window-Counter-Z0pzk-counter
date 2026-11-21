@@ -31,6 +31,12 @@ struct RecordedClick {
     bool releaseMatters = false;
 };
 
+struct PendingClick {
+    CCPoint pos;
+    double frames = 1.0;
+    int ticksLeft = 2;
+};
+
 enum class ScanPhase : int {
     Idle = 0,
     ApproachCheckpoint = 1,
@@ -62,11 +68,25 @@ bool isPlayerHoldingJump(P* p) {
 }
 
 template <typename PL>
-void safeMarkCheckpoint(PL* pl) {
-    if (!pl) return;
+bool safeCreateAndStoreCheckpoint(PL* pl) {
+    if (!pl) return false;
+    if constexpr (requires { pl->createCheckpoint(); pl->storeCheckpoint(pl->createCheckpoint()); }) {
+        if (auto* cp = pl->createCheckpoint()) {
+            pl->storeCheckpoint(cp);
+            if constexpr (requires { pl->m_checkpointArray; }) {
+                return pl->m_checkpointArray && pl->m_checkpointArray->count() > 0;
+            }
+            return true;
+        }
+    }
     if constexpr (requires { pl->markCheckpoint(); }) {
         pl->markCheckpoint();
+        if constexpr (requires { pl->m_checkpointArray; }) {
+            return pl->m_checkpointArray && pl->m_checkpointArray->count() > 0;
+        }
+        return true;
     }
+    return false;
 }
 
 template <typename PL>
@@ -142,14 +162,14 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
         bool prevHolding[2] = { false, false };
         uint64_t lastHookTick[2][2] = { { 0, 0 }, { 0, 0 } };
-        bool lastPlayerMoved = false;
+        bool isDeadThisAttempt = false;
+        std::vector<PendingClick> pendingClicks;
         std::deque<double> recentClicks;
 
         std::vector<RecordedClick> currentRun;
         std::vector<RecordedClick> savedRun;
 
         bool isScanning = false;
-        bool scannerInjecting = false;
         bool scanProbeDied = false;
         bool wasPracticeBeforeScan = false;
         ScanPhase scanPhase = ScanPhase::Idle;
@@ -162,6 +182,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
         int probeTick = 0;
         int baseClickTick = 0;
+        int maxApproachTicks = 480;
         float baseEndX = 0.0f;
         CCPoint baseClickPos = ccp(0.0f, 30.0f);
         bool targetFiredThisProbe = false;
@@ -170,10 +191,11 @@ class $modify(FWCPlayLayer, PlayLayer) {
         int safeLate = 0;
         int safeEarly = 0;
         int totalSolved = 0;
+        int diagSkip = 0;
+        int diagFail = 0;
     };
 
     bool isScanning() { return m_fields->isScanning; }
-    bool isScannerInjecting() { return m_fields->scannerInjecting; }
 
     size_t getRecordedClickCount() {
         auto& f = *m_fields.self();
@@ -186,7 +208,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         double fps = static_cast<double>(f.cfg.refFps);
         double total = 0.0;
         for (auto const& mk : fwc::MarkerStore::get().markers()) {
-            double df = f.cfg.cbfMode ? mk.frames : std::max(1.0, std::round(mk.frames));
+            double df = fwc::resolveDisplayFrames(mk.frames, f.cfg.cbfMode);
             total += fwc::clickPrecisionWeight(fwc::framesToMs(df, fps));
         }
         f.overlay->setPlannedTotalPrecision(total);
@@ -284,7 +306,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         p.halfW = std::clamp(rect.size.width * 0.5f, 5.0f, 18.0f);
         p.halfH = std::clamp(rect.size.height * 0.5f, 5.0f, 18.0f);
         p.vx = std::clamp(f.measuredSpeedX, 180.0f, 950.0f);
-        p.vy0 = static_cast<float>(player->m_yVelocity) * 60.0f;
+        p.vy0 = static_cast<float>(player->m_yVelocity) * 54.0f;
         p.upsideDown = player->m_isUpsideDown;
         p.mini = (player->m_vehicleSize < 0.8f);
         p.isWave = player->m_isDart;
@@ -301,9 +323,10 @@ class $modify(FWCPlayLayer, PlayLayer) {
         return fwc::sim::solveAutoWindowFrames(p, local, static_cast<double>(f.cfg.refFps));
     }
 
-    void triggerFeedback(PlayerObject* player, double frames, std::string const& manualComment) {
+    void triggerFeedbackAt(CCPoint pos, double frames, std::string const& manualComment) {
         auto& f = *m_fields.self();
-        if (!f.cfg.enabled || f.isScanning || !player) return;
+        if (!f.cfg.enabled || f.isScanning || f.isDeadThisAttempt) return;
+        if (m_player1 && m_player1->m_isDead) return;
 
         f.recentClicks.push_back(f.simTime);
         while (!f.recentClicks.empty() && (f.simTime - f.recentClicks.front()) > 1.0) {
@@ -312,12 +335,12 @@ class $modify(FWCPlayLayer, PlayLayer) {
         double liveCps = static_cast<double>(f.recentClicks.size());
 
         if (f.overlay) {
-            f.overlay->onClickTriggered(m_objectLayer, player->getPosition(), frames, manualComment, f.simTime, liveCps);
+            f.overlay->onClickTriggered(m_objectLayer, pos, frames, manualComment, f.simTime, liveCps);
         }
 
         if (f.cfg.soundEnabled) {
             double fps = static_cast<double>(f.cfg.refFps);
-            double displayFrames = f.cfg.cbfMode ? frames : std::max(1.0, std::round(frames));
+            double displayFrames = fwc::resolveDisplayFrames(frames, f.cfg.cbfMode);
             auto tiers = fwc::buildTiers(f.cfg.tableStyle, fps);
             int ti = fwc::findTierIndex(tiers, displayFrames);
             fwc::AudioManager::get().playForTier(f.cfg, tiers[static_cast<size_t>(ti)]);
@@ -326,7 +349,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
     void recordInputForScan(PlayerObject* player, bool down, bool isPlayer1) {
         auto& f = *m_fields.self();
-        if (f.isScanning || !player) return;
+        if (f.isScanning || f.isDeadThisAttempt || !player || player->m_isDead) return;
 
         CCPoint pos = player->getPosition();
         for (int k = static_cast<int>(f.currentRun.size()) - 1; k >= 0; --k) {
@@ -349,10 +372,9 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
     void handleResolvedClick(PlayerObject* player, bool down, bool isPlayer1, bool fromHook) {
         auto& f = *m_fields.self();
-        if (!f.cfg.enabled || f.isScanning) return;
+        if (!f.cfg.enabled || f.isScanning || f.isDeadThisAttempt) return;
         if (!player) player = isPlayer1 ? m_player1 : m_player2;
-        if (!player) return;
-        if (player->m_isDead && !f.lastPlayerMoved) return;
+        if (!player || player->m_isDead) return;
 
         int pIdx = isPlayer1 ? 0 : 1;
         int dIdx = down ? 1 : 0;
@@ -370,28 +392,21 @@ class $modify(FWCPlayLayer, PlayLayer) {
             double estFrames = computeAutoWindowFrames(player, down);
             if (estFrames < 0.0) return;
 
+            auto pos = player->getPosition();
             if (f.cfg.captureToManual) {
-                auto pos = player->getPosition();
                 fwc::MarkerStore::get().addMarker(pos.x, pos.y, estFrames, "");
             }
 
             if (f.cfg.mode == fwc::CounterMode::Auto) {
-                triggerFeedback(player, estFrames, "");
+                f.pendingClicks.push_back({ pos, estFrames, 2 });
             }
         }
     }
 
-    void injectScanButton(bool down, bool isP1) {
+    void resetProbeState(std::function<void(bool, int, bool)> const& runBaseBtn) {
         auto& f = *m_fields.self();
-        f.scannerInjecting = true;
-        this->handleButton(down, 1, isP1);
-        f.scannerInjecting = false;
-    }
-
-    void resetProbeState() {
-        auto& f = *m_fields.self();
-        injectScanButton(false, true);
-        injectScanButton(false, false);
+        runBaseBtn(false, 1, true);
+        runBaseBtn(false, 1, false);
 
         f.scanProbeDied = false;
         f.probeTick = 0;
@@ -421,12 +436,14 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
         f.replayFired.assign(f.scanClicks.size(), false);
         f.isScanning = true;
-        f.scannerInjecting = false;
         f.scanProbeDied = false;
         f.scanClickIdx = 0;
         f.cpStartIdx = 0;
         f.hasActiveCp = false;
         f.totalSolved = 0;
+        f.diagSkip = 0;
+        f.diagFail = 0;
+        f.pendingClicks.clear();
         f.scanPhase = ScanPhase::ApproachCheckpoint;
 
         f.wasPracticeBeforeScan = m_isPracticeMode;
@@ -441,8 +458,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
             f.overlay->setScanStatus(true, fmt::format("SCANNING 1 / {}...", f.scanClicks.size()));
         }
 
-        injectScanButton(false, true);
-        injectScanButton(false, false);
         safeResetFromStart(this);
         f.scanProbeDied = false;
     }
@@ -451,11 +466,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         auto& f = *m_fields.self();
         if (!f.isScanning) return;
 
-        injectScanButton(false, true);
-        injectScanButton(false, false);
-
         f.isScanning = false;
-        f.scannerInjecting = false;
         f.scanPhase = ScanPhase::Idle;
 
         safeRemoveAllCheckpoints(this);
@@ -479,14 +490,24 @@ class $modify(FWCPlayLayer, PlayLayer) {
         safeResetFromStart(this);
 
         if (completed && f.overlay) {
-            f.overlay->showCallout(
-                fmt::format("SCAN COMPLETE\n{} EXACT CLICKS", f.totalSolved),
-                ccc3(118, 244, 132)
-            );
+            if (f.totalSolved > 0) {
+                f.overlay->showCallout(
+                    fmt::format("SCAN COMPLETE\n{} EXACT CLICKS", f.totalSolved),
+                    ccc3(118, 244, 132)
+                );
+            } else {
+                f.overlay->showCallout(
+                    fmt::format("0 CLICKS FOUND\nSKIP:{} FAIL:{}", f.diagSkip, f.diagFail),
+                    ccc3(255, 118, 92)
+                );
+            }
         }
     }
 
-    void stepScannerTick(std::function<void(float)> const& runBaseUpdate) {
+    void stepScannerTick(
+        std::function<void(float)> const& runBaseUpdate,
+        std::function<void(bool, int, bool)> const& runBaseBtn
+    ) {
         auto& f = *m_fields.self();
         if (!f.isScanning) return;
 
@@ -496,6 +517,10 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
         auto tStart = std::chrono::steady_clock::now();
         int stepsDone = 0;
+
+        auto didDie = [&]() -> bool {
+            return f.scanProbeDied || (m_player1 && m_player1->m_isDead);
+        };
 
         while (f.isScanning && stepsDone < 280) {
             if ((stepsDone & 7) == 7) {
@@ -525,43 +550,50 @@ class $modify(FWCPlayLayer, PlayLayer) {
                     if (skipTarget && j == i) continue;
                     if (!f.replayFired[j] && curX >= f.scanClicks[j].x) {
                         f.replayFired[j] = true;
-                        injectScanButton(f.scanClicks[j].down, f.scanClicks[j].isP1);
+                        runBaseBtn(f.scanClicks[j].down, 1, f.scanClicks[j].isP1);
                     }
                 }
             };
 
             if (f.scanPhase == ScanPhase::ApproachCheckpoint) {
-                float targetCpX = std::max(0.0f, f.scanClicks[i].x - 85.0f);
+                float targetCpX = std::max(0.0f, f.scanClicks[i].x - 75.0f);
 
                 if (targetCpX <= 12.0f) {
                     f.hasActiveCp = false;
                     f.cpStartIdx = 0;
+                    f.maxApproachTicks = 480;
                     f.scanPhase = ScanPhase::MeasureBaseline;
                     f.baseClickTick = -1;
                     f.baseEndX = 0.0f;
-                    resetProbeState();
+                    resetProbeState(runBaseBtn);
                     continue;
                 }
 
                 if (curX >= targetCpX) {
                     safeRemoveAllCheckpoints(this);
-                    safeMarkCheckpoint(this);
-                    f.hasActiveCp = true;
-                    f.cpStartIdx = 0;
-                    while (f.cpStartIdx < i && f.replayFired[f.cpStartIdx]) {
-                        f.cpStartIdx++;
+                    bool stored = safeCreateAndStoreCheckpoint(this);
+                    f.hasActiveCp = stored;
+                    if (stored) {
+                        f.cpStartIdx = 0;
+                        while (f.cpStartIdx < i && f.replayFired[f.cpStartIdx]) {
+                            f.cpStartIdx++;
+                        }
+                        f.maxApproachTicks = 420;
+                    } else {
+                        f.cpStartIdx = 0;
+                        f.maxApproachTicks = std::max(600, static_cast<int>((f.scanClicks[i].x / 140.0f) * 240.0f) + 240);
                     }
                     f.scanPhase = ScanPhase::MeasureBaseline;
                     f.baseClickTick = -1;
                     f.baseEndX = 0.0f;
-                    resetProbeState();
+                    resetProbeState(runBaseBtn);
                     continue;
                 }
 
                 fireReplayRange(f.cpStartIdx, i, false);
                 runBaseUpdate(kFixedDt);
 
-                if (f.scanProbeDied || safeHasCompleted(this) || f.probeTick > 36000) {
+                if (didDie() || safeHasCompleted(this) || f.probeTick > 36000) {
                     finishOrCancelScan(true);
                     return;
                 }
@@ -573,27 +605,28 @@ class $modify(FWCPlayLayer, PlayLayer) {
                     f.baseClickTick = f.probeTick;
                     f.baseClickPos = m_player1 ? m_player1->getPosition() : ccp(f.scanClicks[i].x, f.scanClicks[i].y);
                     f.replayFired[i] = true;
-                    injectScanButton(f.scanClicks[i].down, f.scanClicks[i].isP1);
+                    runBaseBtn(f.scanClicks[i].down, 1, f.scanClicks[i].isP1);
                 }
                 fireReplayRange(f.cpStartIdx, f.scanClicks.size(), true);
                 runBaseUpdate(kFixedDt);
                 f.probeTick++;
 
                 bool finishedLookahead = f.targetFiredThisProbe && ((f.probeTick - f.baseClickTick) >= kLookaheadTicks);
-                bool failedBeforeTarget = !f.targetFiredThisProbe && (f.scanProbeDied || f.probeTick > 260);
+                bool failedBeforeTarget = !f.targetFiredThisProbe && (didDie() || f.probeTick > f.maxApproachTicks);
 
                 if (failedBeforeTarget) {
+                    f.diagFail++;
                     f.scanClickIdx++;
                     f.scanPhase = ScanPhase::ApproachCheckpoint;
-                    resetProbeState();
+                    resetProbeState(runBaseBtn);
                     continue;
                 }
 
-                if (finishedLookahead || f.scanProbeDied || safeHasCompleted(this)) {
+                if (finishedLookahead || didDie() || safeHasCompleted(this)) {
                     f.baseEndX = m_player1 ? m_player1->getPositionX() : curX;
                     if (f.baseClickTick < 0) f.baseClickTick = f.probeTick;
                     f.scanPhase = ScanPhase::TestSkip;
-                    resetProbeState();
+                    resetProbeState(runBaseBtn);
                 }
             }
             else if (f.scanPhase == ScanPhase::TestSkip) {
@@ -602,23 +635,24 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 f.probeTick++;
 
                 bool doneTicks = (f.probeTick - f.baseClickTick) >= kLookaheadTicks;
-                if (f.scanProbeDied || doneTicks || safeHasCompleted(this)) {
+                if (didDie() || doneTicks || safeHasCompleted(this)) {
                     float endX = m_player1 ? m_player1->getPositionX() : curX;
-                    bool survivedWithoutClick = !f.scanProbeDied && (endX >= f.baseEndX - 8.0f);
+                    bool survivedWithoutClick = !didDie() && (endX >= f.baseEndX - 8.0f);
 
                     if (survivedWithoutClick) {
+                        f.diagSkip++;
                         f.scanClickIdx++;
                         f.scanPhase = ScanPhase::ApproachCheckpoint;
                         if (f.overlay && f.scanClickIdx < f.scanClicks.size()) {
                             f.overlay->setScanStatus(true, fmt::format("SCANNING {} / {}...", f.scanClickIdx + 1, f.scanClicks.size()));
                         }
-                        resetProbeState();
+                        resetProbeState(runBaseBtn);
                     } else {
                         f.safeLate = 0;
                         f.safeEarly = 0;
                         f.currentDelta = 1;
                         f.scanPhase = ScanPhase::TestLate;
-                        resetProbeState();
+                        resetProbeState(runBaseBtn);
                     }
                 }
             }
@@ -632,33 +666,33 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 if (!f.targetFiredThisProbe && f.probeTick == targetTick) {
                     f.targetFiredThisProbe = true;
                     f.replayFired[i] = true;
-                    injectScanButton(f.scanClicks[i].down, f.scanClicks[i].isP1);
+                    runBaseBtn(f.scanClicks[i].down, 1, f.scanClicks[i].isP1);
                 }
                 fireReplayRange(f.cpStartIdx, f.scanClicks.size(), true);
                 runBaseUpdate(kFixedDt);
                 f.probeTick++;
 
                 bool doneTicks = (f.probeTick - f.baseClickTick) >= kLookaheadTicks;
-                if (f.scanProbeDied || doneTicks || safeHasCompleted(this)) {
+                if (didDie() || doneTicks || safeHasCompleted(this)) {
                     float endX = m_player1 ? m_player1->getPositionX() : curX;
-                    bool survived = !f.scanProbeDied && (endX >= f.baseEndX - 10.0f);
+                    bool survived = !didDie() && (endX >= f.baseEndX - 10.0f);
 
                     if (f.scanPhase == ScanPhase::TestLate) {
                         if (survived && f.currentDelta < kMaxShift) {
                             f.safeLate = f.currentDelta;
                             f.currentDelta++;
-                            resetProbeState();
+                            resetProbeState(runBaseBtn);
                         } else {
                             if (survived) f.safeLate = f.currentDelta;
                             f.currentDelta = -1;
                             f.scanPhase = ScanPhase::TestEarly;
-                            resetProbeState();
+                            resetProbeState(runBaseBtn);
                         }
                     } else {
                         if (survived && (-f.currentDelta) < kMaxShift) {
                             f.safeEarly = -f.currentDelta;
                             f.currentDelta--;
-                            resetProbeState();
+                            resetProbeState(runBaseBtn);
                         } else {
                             if (survived) f.safeEarly = -f.currentDelta;
                             f.scanPhase = ScanPhase::Done;
@@ -681,7 +715,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                     f.overlay->setScanStatus(true, fmt::format("SCANNING {} / {}...", f.scanClickIdx + 1, f.scanClicks.size()));
                 }
                 f.scanPhase = ScanPhase::ApproachCheckpoint;
-                resetProbeState();
+                resetProbeState(runBaseBtn);
             }
         }
     }
@@ -700,21 +734,32 @@ class $modify(FWCPlayLayer, PlayLayer) {
     }
 
     static void onModify(auto& self) {
-        (void)self.setHookPriority("PlayLayer::destroyPlayer", -10000);
+        (void)self.setHookPriority("PlayLayer::destroyPlayer", -100000);
     }
 
     void destroyPlayer(PlayerObject* player, GameObject* object) {
-        if (m_fields->isScanning) {
-            bool isAnticheat = false;
-            if constexpr (requires { this->m_anticheatSpike; }) {
-                isAnticheat = (object != nullptr && object == this->m_anticheatSpike);
-            }
+        auto& f = *m_fields.self();
+        bool isAnticheat = false;
+        if constexpr (requires { this->m_anticheatSpike; }) {
+            isAnticheat = (object != nullptr && object == this->m_anticheatSpike);
+        }
+
+        if (f.isScanning) {
             if (!isAnticheat) {
-                m_fields->scanProbeDied = true;
+                f.scanProbeDied = true;
             }
             return;
         }
+
+        if (!isAnticheat) {
+            f.pendingClicks.clear();
+        }
+
         PlayLayer::destroyPlayer(player, object);
+
+        if (!isAnticheat && m_player1 && m_player1->m_isDead) {
+            f.isDeadThisAttempt = true;
+        }
     }
 
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
@@ -726,6 +771,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         f.updateTick = 1;
         f.objectsIndexed = false;
         f.isScanning = false;
+        f.isDeadThisAttempt = false;
         f.prevPlayerX = m_player1 ? m_player1->getPositionX() : 0.0f;
         f.prevHolding[0] = isPlayerHoldingJump(m_player1);
         f.prevHolding[1] = isPlayerHoldingJump(m_player2);
@@ -759,17 +805,18 @@ class $modify(FWCPlayLayer, PlayLayer) {
             f.savedRun = f.currentRun;
         }
         f.currentRun.clear();
+        f.pendingClicks.clear();
         f.recentClicks.clear();
 
         f.cfg = fwc::ModConfig::load();
         f.simTime = 0.0;
         f.updateTick++;
+        f.isDeadThisAttempt = false;
         f.prevPlayerX = m_player1 ? m_player1->getPositionX() : 0.0f;
         f.prevHolding[0] = false;
         f.prevHolding[1] = false;
         f.lastHookTick[0][0] = f.lastHookTick[0][1] = 0;
         f.lastHookTick[1][0] = f.lastHookTick[1][1] = 0;
-        f.lastPlayerMoved = false;
 
         ensureObjectsIndexed();
         fwc::MarkerStore::get().resetTriggers();
@@ -801,6 +848,11 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
         float curX = 0.0f;
         if (m_player1) {
+            if (m_player1->m_isDead) {
+                f.isDeadThisAttempt = true;
+                f.pendingClicks.clear();
+            }
+
             curX = m_player1->getPositionX();
             float dx = curX - f.prevPlayerX;
 
@@ -811,14 +863,15 @@ class $modify(FWCPlayLayer, PlayLayer) {
             }
 
             if (dx < -15.0f) {
+                f.isDeadThisAttempt = false;
+                f.pendingClicks.clear();
                 f.prevHolding[0] = isPlayerHoldingJump(m_player1);
                 f.prevHolding[1] = isPlayerHoldingJump(m_player2);
                 fwc::MarkerStore::get().resetTriggersAfter(curX);
                 if (f.overlay) {
                     f.overlay->pruneCirclesAfter(curX);
                 }
-            } else if (dx > 0.01f) {
-                f.lastPlayerMoved = true;
+            } else if (dx > 0.01f && !f.isDeadThisAttempt) {
                 f.simTime += static_cast<double>(dt);
                 if (dt > 1e-6f) {
                     float instSpeed = dx / dt;
@@ -826,41 +879,52 @@ class $modify(FWCPlayLayer, PlayLayer) {
                         f.measuredSpeedX = f.measuredSpeedX * 0.85f + instSpeed * 0.15f;
                     }
                 }
-            } else {
-                f.lastPlayerMoved = false;
             }
             f.prevPlayerX = curX;
 
-            if (f.overlay) {
-                float len = safeGetLevelLength(this);
-                double pct = safeHasCompleted(this) ? 100.0 : (static_cast<double>(curX) * 100.0 / static_cast<double>(len));
-                f.overlay->setLevelProgress(pct);
-            }
-
-            auto checkPlayerHoldEdge = [&](PlayerObject* p, bool isP1) {
-                if (!p) return;
-                int pIdx = isP1 ? 0 : 1;
-                bool curHold = isPlayerHoldingJump(p);
-                if (curHold != f.prevHolding[pIdx]) {
-                    f.prevHolding[pIdx] = curHold;
-                    handleResolvedClick(p, curHold, isP1, false);
+            if (!f.isDeadThisAttempt && !m_player1->m_isDead) {
+                for (size_t k = 0; k < f.pendingClicks.size(); ) {
+                    f.pendingClicks[k].ticksLeft--;
+                    if (f.pendingClicks[k].ticksLeft <= 0) {
+                        auto pc = f.pendingClicks[k];
+                        f.pendingClicks.erase(f.pendingClicks.begin() + static_cast<ptrdiff_t>(k));
+                        triggerFeedbackAt(pc.pos, pc.frames, "");
+                    } else {
+                        ++k;
+                    }
                 }
-            };
-            checkPlayerHoldEdge(m_player1, true);
-            if (m_player2 && m_player2->isVisible()) {
-                checkPlayerHoldEdge(m_player2, false);
-            }
 
-            auto& markers = fwc::MarkerStore::get().markers();
-            for (auto& mk : markers) {
-                if (!mk.triggered && curX >= mk.x) {
-                    mk.triggered = true;
-                    if (f.cfg.mode == fwc::CounterMode::Manual) {
-                        triggerFeedback(m_player1, mk.frames, mk.comment);
-                    } else if (!mk.comment.empty() && f.overlay) {
-                        auto tiers = fwc::buildTiers(f.cfg.tableStyle, static_cast<double>(f.cfg.refFps));
-                        int ti = fwc::findTierIndex(tiers, mk.frames);
-                        f.overlay->showCallout(mk.comment, tiers[static_cast<size_t>(ti)].color);
+                if (f.overlay) {
+                    float len = safeGetLevelLength(this);
+                    double pct = safeHasCompleted(this) ? 100.0 : (static_cast<double>(curX) * 100.0 / static_cast<double>(len));
+                    f.overlay->setLevelProgress(pct);
+                }
+
+                auto checkPlayerHoldEdge = [&](PlayerObject* p, bool isP1) {
+                    if (!p) return;
+                    int pIdx = isP1 ? 0 : 1;
+                    bool curHold = isPlayerHoldingJump(p);
+                    if (curHold != f.prevHolding[pIdx]) {
+                        f.prevHolding[pIdx] = curHold;
+                        handleResolvedClick(p, curHold, isP1, false);
+                    }
+                };
+                checkPlayerHoldEdge(m_player1, true);
+                if (m_player2 && m_player2->isVisible()) {
+                    checkPlayerHoldEdge(m_player2, false);
+                }
+
+                auto& markers = fwc::MarkerStore::get().markers();
+                for (auto& mk : markers) {
+                    if (!mk.triggered && curX >= mk.x) {
+                        mk.triggered = true;
+                        if (f.cfg.mode == fwc::CounterMode::Manual) {
+                            triggerFeedbackAt(m_player1->getPosition(), mk.frames, mk.comment);
+                        } else if (!mk.comment.empty() && f.overlay) {
+                            auto tiers = fwc::buildTiers(f.cfg.tableStyle, static_cast<double>(f.cfg.refFps));
+                            int ti = fwc::findTierIndex(tiers, fwc::resolveDisplayFrames(mk.frames, f.cfg.cbfMode));
+                            f.overlay->showCallout(mk.comment, tiers[static_cast<size_t>(ti)].color);
+                        }
                     }
                 }
             }
@@ -884,9 +948,10 @@ class $modify(FWCGJBaseGameLayer, GJBaseGameLayer) {
         if (auto* pl = typeinfo_cast<PlayLayer*>(this)) {
             auto* fwcPl = static_cast<FWCPlayLayer*>(pl);
             if (fwcPl->isScanning()) {
-                fwcPl->stepScannerTick([this](float stepDt) {
-                    GJBaseGameLayer::update(stepDt);
-                });
+                fwcPl->stepScannerTick(
+                    [this](float stepDt) { GJBaseGameLayer::update(stepDt); },
+                    [this](bool d, int b, bool p1) { GJBaseGameLayer::handleButton(d, b, p1); }
+                );
                 return;
             }
         }
@@ -897,10 +962,6 @@ class $modify(FWCGJBaseGameLayer, GJBaseGameLayer) {
         if (auto* pl = typeinfo_cast<PlayLayer*>(this)) {
             auto* fwcPl = static_cast<FWCPlayLayer*>(pl);
             if (fwcPl->isScanning()) {
-                if (!fwcPl->isScannerInjecting()) {
-                    return;
-                }
-                GJBaseGameLayer::handleButton(down, button, isPlayer1);
                 return;
             }
             if (button == 1) {

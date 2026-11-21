@@ -23,7 +23,7 @@ enum class BannerMode : int {
 };
 
 enum class TableStyle : int {
-    TopDown24 = 0, // 1, 2, 3, 4, 5-6, 7-8, 9-12, 13-16, 17-24 (tightest at TOP!)
+    TopDown24 = 0, // 1, 2, 3, 4, 5-6, 7-8, 9-12, 13-16, 17-24
     CbfRanges = 1, // 10+, 8-10, 6-8, 5-6, 4-5, 3-4, 2-3, 1-2, 0-1
     Discrete  = 2  // 9-12, 7-8, 5-6, 4, 3, 2, 1
 };
@@ -170,6 +170,12 @@ struct ModConfig {
     }
 };
 
+// Floor-aligned frame count for integer mode (2.9 -> 2, 1.9 -> 1, 0.7 -> 1)
+inline double resolveDisplayFrames(double rawFrames, bool cbfMode) {
+    if (cbfMode) return std::max(0.05, rawFrames);
+    return static_cast<double>(std::max(1, static_cast<int>(std::floor(rawFrames + 1e-6))));
+}
+
 inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
     double fps = std::max(30.0, refFps);
     double scale = fps / 240.0;
@@ -193,18 +199,19 @@ inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
 
     std::vector<TierDef> tiers;
     if (style == TableStyle::TopDown24) {
-        // Exact order & palette: 1, 2, 3, 4, 5-6, 7-8, 9-12, 13-16, 17-24
+        // Strict FLOOR-aligned boundaries: [0,2)->1, [2,3)->2, [3,4)->3, [4,5)->4, [5,7)->5-6, ...
+        // So 2.9 ALWAYS lands in "2:", NEVER "3:"!
         struct RawTD { const char* key; double lo; double hi; const char* lbl; ccColor3B col; float pitch; };
         const RawTD raw[9] = {
-            { "1",     0.0,  1.5,  "1:",     ccc3(255, 110, 102),  0.32f },
-            { "2",     1.5,  2.5,  "2:",     ccc3(255, 184,  88),  0.22f },
-            { "3",     2.5,  3.5,  "3:",     ccc3(255, 240, 106),  0.14f },
-            { "4",     3.5,  4.5,  "4:",     ccc3(244, 248, 255),  0.07f },
-            { "5-6",   4.5,  6.5,  "5-6:",   ccc3(114, 244, 134),  0.01f },
-            { "7-8",   6.5,  8.5,  "7-8:",   ccc3(110, 224, 255), -0.05f },
-            { "9-12",  8.5, 12.5,  "9-12:",  ccc3(118, 168, 255), -0.10f },
-            { "13-16",12.5, 16.5,  "13-16:", ccc3(196, 164, 255), -0.15f },
-            { "17-24",16.5, 1e9,   "17-24:", ccc3(244, 162, 232), -0.20f }
+            { "1",     0.0,  2.0,  "1:",     ccc3(255, 110, 102),  0.32f },
+            { "2",     2.0,  3.0,  "2:",     ccc3(255, 184,  88),  0.22f },
+            { "3",     3.0,  4.0,  "3:",     ccc3(255, 240, 106),  0.14f },
+            { "4",     4.0,  5.0,  "4:",     ccc3(244, 248, 255),  0.07f },
+            { "5-6",   5.0,  7.0,  "5-6:",   ccc3(114, 244, 134),  0.01f },
+            { "7-8",   7.0,  9.0,  "7-8:",   ccc3(110, 224, 255), -0.05f },
+            { "9-12",  9.0, 13.0,  "9-12:",  ccc3(118, 168, 255), -0.10f },
+            { "13-16",13.0, 17.0,  "13-16:", ccc3(196, 164, 255), -0.15f },
+            { "17-24",17.0, 1e9,   "17-24:", ccc3(244, 162, 232), -0.20f }
         };
         for (auto const& b : raw) {
             double lo = b.lo * scale;
@@ -240,15 +247,16 @@ inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
             tiers.push_back({ b.key, lbl, desc, msRangeStr(lo, hi), lo, hi, b.col, b.pitch });
         }
     } else {
+        // Strict FLOOR-aligned discrete tiers: [0,2)->1, [2,3)->2, [3,4)->3, [4,5)->4, [5,7)->5-6, ...
         struct RawDisc { const char* key; double lo; double hi; const char* lbl; ccColor3B col; float pitch; };
         const RawDisc raw[7] = {
-            { "9-12", 8.5, 1e9,  "9-12:", ccc3(122, 160, 255), -0.10f },
-            { "7-8",  6.5, 8.5,  "7-8:",  ccc3( 96, 220, 255), -0.04f },
-            { "5-6",  4.5, 6.5,  "5-6:",  ccc3(106, 240, 150),  0.02f },
-            { "4",    3.5, 4.5,  "4:",    ccc3(222, 246, 112),  0.08f },
-            { "3",    2.5, 3.5,  "3:",    ccc3(255, 224,  88),  0.14f },
-            { "2",    1.5, 2.5,  "2:",    ccc3(255, 156,  84),  0.22f },
-            { "1",    0.0, 1.5,  "1:",    ccc3(255,  92, 112),  0.32f }
+            { "9-12", 9.0, 1e9,  "9-12:", ccc3(122, 160, 255), -0.10f },
+            { "7-8",  7.0, 9.0,  "7-8:",  ccc3( 96, 220, 255), -0.04f },
+            { "5-6",  5.0, 7.0,  "5-6:",  ccc3(106, 240, 150),  0.02f },
+            { "4",    4.0, 5.0,  "4:",    ccc3(222, 246, 112),  0.08f },
+            { "3",    3.0, 4.0,  "3:",    ccc3(255, 224,  88),  0.14f },
+            { "2",    2.0, 3.0,  "2:",    ccc3(255, 156,  84),  0.22f },
+            { "1",    0.0, 2.0,  "1:",    ccc3(255,  92, 112),  0.32f }
         };
         for (auto const& b : raw) {
             double lo = b.lo * scale;
@@ -263,7 +271,6 @@ inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
     return tiers;
 }
 
-// Works for BOTH ascending (1 -> 24) and descending (10+ -> 0-1) tier tables!
 inline int findTierIndex(std::vector<TierDef> const& tiers, double frames) {
     if (tiers.empty()) return 0;
     for (size_t i = 0; i < tiers.size(); ++i) {
@@ -271,18 +278,18 @@ inline int findTierIndex(std::vector<TierDef> const& tiers, double frames) {
             return static_cast<int>(i);
         }
     }
-    // Fallback to closest boundary
     return (tiers.front().minF <= 0.001) ? static_cast<int>(tiers.size()) - 1 : 0;
 }
 
+// Always floors in integer mode (2.9 -> "2", 1.9 -> "1"), exact decimals in CBF mode!
 inline std::string formatCircleNumber(double frames, bool cbfMode) {
     if (!cbfMode) {
-        int rounded = std::max(1, static_cast<int>(std::round(frames)));
-        return fmt::format("{}", rounded);
+        int floored = std::max(1, static_cast<int>(std::floor(frames + 1e-6)));
+        return fmt::format("{}", floored);
     }
     if (frames < 2.0) return fmt::format("{:.2f}", frames);
     if (frames < 10.0) return fmt::format("{:.1f}", frames);
-    return fmt::format("{:.0f}", std::round(frames));
+    return fmt::format("{:.0f}", std::floor(frames + 1e-6));
 }
 
 inline double framesToMs(double frames, double refFps) {
@@ -295,7 +302,6 @@ inline double framesToHz(double frames, double refFps) {
     return 1.0 / sec;
 }
 
-// Calibrated Raw Precision difficulty weight per click (in sigma/s units)
 inline double clickPrecisionWeight(double ms) {
     double clampedMs = std::max(0.5, ms);
     return std::pow(18.0 / clampedMs, 1.45);

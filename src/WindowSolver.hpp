@@ -47,11 +47,12 @@ struct SimParams {
     bool isPress = true;
 };
 
-// Exact GD 2.2 Cube Jump constants (11.180032 * 60 = 670.802 u/s, 0.958199 * 3600 = 3449.516 u/s^2)
-// Air time = 0.38891 s, Jump height = 65.22 u (2.17 blocks), 1x distance = 121.18 u (4.04 blocks)
-constexpr float kCubeVyNormal = 670.802f;
-constexpr float kCubeVyMini   = 536.642f;
-constexpr float kCubeGrav     = 3449.516f;
+// EXACT Geometry Dash 2.2 PlayerObject::updateJump constants (includes the 0.9 Y-factor -> 60 * 0.9 = 54.0!):
+// Normal Cube: yVel0 = 11.180032 -> 603.722 u/s, gravity = 0.958199 -> 3104.565 u/s^2
+// Mini Cube:   yVel0 =  8.944026 -> 482.977 u/s, gravity = 0.958199 -> 3104.565 u/s^2
+constexpr float kCubeVyNormal = 603.722f;
+constexpr float kCubeVyMini   = 482.977f;
+constexpr float kCubeGrav     = 3104.565f;
 
 inline bool isOrbKind(ObjKind k) {
     return static_cast<uint8_t>(k) >= static_cast<uint8_t>(ObjKind::YellowOrb);
@@ -88,7 +89,6 @@ inline bool hitsHazard(std::vector<SpatialObj> const& local, float cx, float cy,
 }
 
 inline bool hitsSolidCore(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh) {
-    // GD blue inner hitbox is 30% of player size (9x9 for normal cube)
     float px0 = cx - hw * 0.30f, px1 = cx + hw * 0.30f;
     float py0 = cy - hh * 0.30f, py1 = cy + hh * 0.30f;
     for (auto const& o : local) {
@@ -99,15 +99,15 @@ inline bool hitsSolidCore(std::vector<SpatialObj> const& local, float cx, float 
     return false;
 }
 
-// Find exact solid surface Y beneath (or above if upsideDown) the player, returns true if supported
+// GD cube landing includes ~9u top-snap tolerance onto solid blocks (so H=58.7u lands cleanly on 60u 2-block platforms!)
 inline bool findSupportY(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh, bool upsideDown, float& outCenterY) {
     if (!upsideDown && cy - hh <= 4.5f) {
         outCenterY = hh;
         return true;
     }
     float px0 = cx - hw * 0.96f, px1 = cx + hw * 0.96f;
-    float py0 = upsideDown ? (cy + hh - 4.0f) : (cy - hh - 7.0f);
-    float py1 = upsideDown ? (cy + hh + 7.0f) : (cy - hh + 4.0f);
+    float py0 = upsideDown ? (cy + hh - 9.0f) : (cy - hh - 6.0f);
+    float py1 = upsideDown ? (cy + hh + 6.0f) : (cy - hh + 9.0f);
     bool found = false;
     float bestY = cy;
     for (auto const& o : local) {
@@ -187,9 +187,6 @@ inline float waveRayClearanceSec(
     return maxTimeSec;
 }
 
-// =========================================================================
-// TIGHT CORRIDOR WAVE SOLVER
-// =========================================================================
 inline double solveWaveWindowSec(SimParams const& p, std::vector<SpatialObj> const& local) {
     float gravSign = p.upsideDown ? -1.0f : 1.0f;
     float slope = p.mini ? 2.0f : 1.0f;
@@ -204,13 +201,11 @@ inline double solveWaveWindowSec(SimParams const& p, std::vector<SpatialObj> con
     float tBack  = waveRayClearanceSec(local, p.x0, p.y0, -p.vx, -preVy, hw, hh, kMaxRay);
     float tPost0 = waveRayClearanceSec(local, p.x0, p.y0,  p.vx, postVy, hw, hh, kMaxRay);
 
-    // Wide open tunnel (no obstacle within 95ms ahead AND >135ms total room) -> harmless spam
     if (tLate >= 0.095f && (tLate + tBack) >= 0.135f) {
         return -1.0;
     }
 
-    // Strict post-click clearance: shifted turn must survive at least 82% of the actual post-click distance (capped at 48ms)
-    float reqPost = std::min(tPost0 * 0.82f, 0.048f);
+    float reqPost = std::min(tPost0 * 0.85f, 0.048f);
     if (reqPost < 0.002f) reqPost = 0.002f;
 
     auto isWaveShiftValid = [&](float dT) -> bool {
@@ -262,9 +257,6 @@ inline double solveWaveWindowSec(SimParams const& p, std::vector<SpatialObj> con
     return std::max(0.0004, winSec);
 }
 
-// =========================================================================
-// STRICT EXACT-GD NON-WAVE SOLVER (Zero fake padding, checks landing hazards!)
-// =========================================================================
 struct ProbeOutcome {
     float endX = 0.0f;
     bool died = false;
@@ -282,7 +274,6 @@ inline ProbeOutcome simulateCandidate(
 ) {
     constexpr float dt = 1.0f / 240.0f;
     float gravSign = p.upsideDown ? -1.0f : 1.0f;
-    // 100% REAL player hitbox (NO artificial shrinking!)
     float hazHW = p.halfW;
     float hazHH = p.halfH;
 
@@ -291,7 +282,7 @@ inline ProbeOutcome simulateCandidate(
     if (!doClick) {
         float x = p.x0, y = p.y0;
         float vy = p.onGround ? 0.0f : p.vy0;
-        float g = (p.isShip ? -1050.0f : -kCubeGrav) * gravSign;
+        float g = (p.isShip ? -950.0f : -kCubeGrav) * gravSign;
         bool onG = p.onGround && !p.isShip && !p.isUfo;
         bool startedInSolid = hitsSolidCore(local, x, y, p.halfW, p.halfH);
 
@@ -323,7 +314,7 @@ inline ProbeOutcome simulateCandidate(
 
     if (p.onGround && !clickWasOrb && !p.isShip && !p.isUfo) {
         if (checkGroundSupp && !hasGroundSupport(local, xClick, yClick, p.halfW, p.halfH, p.upsideDown)) {
-            return { xClick, true }; // Walked off ledge before jumping!
+            return { xClick, true };
         }
         if (deltaT > 0.0f) {
             int preSteps = std::max(1, static_cast<int>(std::ceil(deltaT / dt)));
@@ -336,14 +327,13 @@ inline ProbeOutcome simulateCandidate(
                 }
             }
         } else if (deltaT < 0.0f) {
-            // Shifting earlier: verify we weren't already overlapping a hazard at xClick
             if (hitsHazard(local, xClick, yClick, hazHW, hazHH, false) ||
                 hitsSolidCore(local, xClick, yClick, p.halfW, p.halfH)) {
                 return { xClick, true };
             }
         }
     } else {
-        float preG = (p.isShip ? -1050.0f : -kCubeGrav) * gravSign;
+        float preG = (p.isShip ? -950.0f : -kCubeGrav) * gravSign;
         yClick = p.y0 + p.vy0 * deltaT + 0.5f * preG * deltaT * deltaT;
     }
 
@@ -359,25 +349,25 @@ inline ProbeOutcome simulateCandidate(
 
     if (clickWasOrb) {
         switch (orbKind) {
-            case ObjKind::YellowOrb: vy = (p.mini ? 536.6f : 670.8f) * gravSign; break;
-            case ObjKind::PinkOrb:   vy = (p.mini ? 430.0f : 536.0f) * gravSign; break;
-            case ObjKind::RedOrb:    vy = (p.mini ? 690.0f : 835.0f) * gravSign; break;
-            case ObjKind::BlueOrb:   gravSign = -gravSign; g = -g; vy = 220.0f * gravSign; break;
-            case ObjKind::GreenOrb:  gravSign = -gravSign; g = -g; vy = 640.0f * gravSign; break;
-            case ObjKind::BlackOrb:  vy = -900.0f * gravSign; break;
+            case ObjKind::YellowOrb: vy = (p.mini ? 483.0f : 603.7f) * gravSign; break;
+            case ObjKind::PinkOrb:   vy = (p.mini ? 362.9f : 453.6f) * gravSign; break;
+            case ObjKind::RedOrb:    vy = (p.mini ? 639.4f : 799.2f) * gravSign; break;
+            case ObjKind::BlueOrb:   gravSign = -gravSign; g = -g; vy = 216.0f * gravSign; break;
+            case ObjKind::GreenOrb:  gravSign = -gravSign; g = -g; vy = 603.7f * gravSign; break;
+            case ObjKind::BlackOrb:  vy = -864.0f * gravSign; break;
             case ObjKind::DashOrb:   vy = 0.0f; g = 0.0f; break;
-            default:                 vy = 670.8f * gravSign; break;
+            default:                 vy = 603.7f * gravSign; break;
         }
     } else if (p.isShip) {
-        vy = p.vy0 + 150.0f * gravSign;
-        g = 1150.0f * gravSign;
+        vy = p.vy0 + 135.0f * gravSign;
+        g = 1050.0f * gravSign;
     } else if (p.isUfo) {
-        vy = (p.mini ? 430.0f : 480.0f) * gravSign;
-        g = (p.mini ? -3100.0f : -2650.0f) * gravSign;
+        vy = (p.mini ? 388.0f : 432.0f) * gravSign;
+        g = (p.mini ? -2790.0f : -2385.0f) * gravSign;
     } else if (p.isBall) {
         gravSign = -gravSign;
-        vy = 160.0f * gravSign;
-        g = -2650.0f * gravSign;
+        vy = 145.0f * gravSign;
+        g = -2385.0f * gravSign;
     } else if (p.isSpider) {
         float dirY = gravSign;
         bool landed = false;
@@ -433,14 +423,12 @@ inline ProbeOutcome simulateCandidate(
                 }
             }
         } else {
-            // Keep running on ground for at least 6 ticks AFTER landing to verify we didn't land ON a spike!
             landedTicks++;
             if (landedTicks >= 6) {
                 return { targetEndX, false };
             }
         }
 
-        // ALWAYS check hazard & solid core EVEN ON THE EXACT LANDING TICK!
         if (hitsHazard(local, x, y, hazHW, hazHH, false)) return { x, true };
         if ((!startedInSolid || s > 6) && hitsSolidCore(local, x, y, p.halfW, p.halfH)) return { x, true };
     }
@@ -472,10 +460,8 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
     bool checkGroundSupp = p.onGround && !clickWasOrb &&
         hasGroundSupport(local, p.x0, p.y0, p.halfW, p.halfH, p.upsideDown);
 
-    // Horizon slightly longer than full cube air time (0.39s + 0.05s landing safety check = 0.44s)
     float horizonSec = (p.isShip || p.isUfo) ? 0.18f : 0.44f;
 
-    // 1) Danger test: if NOT clicking survives completely without dying, skip harmless click!
     if (!clickWasOrb) {
         auto noClick = simulateCandidate(p, local, 0.0f, false, ObjKind::Solid, checkGroundSupp, false, horizonSec);
         if (!noClick.died) {
@@ -483,10 +469,9 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
         }
     }
 
-    // 2) Scan fine 1/480s (~2.08ms) grid across [-50ms, +50ms] (covers up to 24 frames @ 240Hz!)
     constexpr int kHalfN = 24;
     constexpr int kTotal = 2 * kHalfN + 1;
-    constexpr float kStep = 1.0f / 480.0f; // 2.083ms per probe -> catches even sub-frame 1F jumps!
+    constexpr float kStep = 1.0f / 480.0f;
 
     ProbeOutcome out[kTotal];
     bool anySurvived = false;
@@ -499,8 +484,6 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
         if (out[i].endX > bestX) bestX = out[i].endX;
     }
 
-    // STRICT survival criterion: if ANY shift survived cleanly (!died), ONLY !died shifts are alive!
-    // (If all shifts died because of a distant next obstacle inside horizon, require within 2.5 units of bestX!)
     auto isGood = [&](ProbeOutcome const& po) -> bool {
         if (anySurvived) return !po.died;
         return (po.endX >= bestX - 2.5f) && (bestX - p.x0 > 12.0f);
@@ -519,10 +502,8 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
     int rightIdx = anchor;
     while (rightIdx < kTotal - 1 && isGood(out[rightIdx + 1])) rightIdx++;
 
-    // Entire [-50ms, +50ms] (> 24F @ 240Hz) survived -> completely wide open click!
     if (leftIdx == 0 && rightIdx == kTotal - 1) return -1.0;
 
-    // 5 binary-search refinements on each edge -> 0.065ms precision!
     float leftT = static_cast<float>(leftIdx - kHalfN) * kStep;
     if (leftIdx > 0) {
         float badT = leftT - kStep;

@@ -193,7 +193,6 @@ private:
         float topY = kPanelH - 80.0f;
 
         if (m_activeTab == 0) {
-            // GENERAL TAB
             addCheckboxRow(m_contentNode, menu, "Enable Mod", m_cfg.enabled, 100, leftX, topY);
 
             std::string scanTxt = m_recordedRunClicks > 0
@@ -243,7 +242,6 @@ private:
             });
             m_contentNode->addChild(fpsInput, 8);
 
-            // 3 Tier Table Presets: [1->24] [0-1] [1/2/3]
             addLabel(m_contentNode, "Tiers:", leftX, topY - 62.0f, 0.34f, "goldFont.fnt");
             const char* tNames[3] = { "1->24", "0-1", "1/2/3" };
             for (int i = 0; i < 3; ++i) {
@@ -281,7 +279,7 @@ private:
             addCheckboxRow(m_contentNode, menu, "Auto Comments", m_cfg.showAutoComments, 105, rightX, topY - 156.0f);
 
             auto* tip = CCLabelBMFont::create(
-                "Play or run Silicate once, then press Scan Exact for 100% real GD engine frame windows!",
+                "Turn off Noclip & Bot Playback before pressing Scan Exact for 100% real GD windows!",
                 "chatFont.fnt"
             );
             tip->setScale(0.52f);
@@ -290,7 +288,6 @@ private:
             m_contentNode->addChild(tip, 3);
         }
         else if (m_activeTab == 1) {
-            // HUD & INTRO SCREEN TAB
             addCheckboxRow(m_contentNode, menu, "Top-Left Table", m_cfg.showTierTable, 110, leftX, topY);
             addCheckboxRow(m_contentNode, menu, "ms & Hz Readout", m_cfg.showMsHz, 111, rightX, topY);
 
@@ -345,7 +342,6 @@ private:
             m_contentNode->addChild(precInput, 8);
         }
         else if (m_activeTab == 2) {
-            // AUDIO TAB
             auto tiers = currentTiers();
             int ovCount = TierSoundStore::get().countActiveOverrides(tiers);
 
@@ -519,7 +515,6 @@ private:
             }
         }
         else {
-            // MANUAL MARKER & COMMENT TAB
             auto& markers = MarkerStore::get().markers();
 
             addCheckboxRow(m_contentNode, menu, "Capture Clicks", m_cfg.captureToManual, 130, leftX, topY);
@@ -573,7 +568,7 @@ private:
                     int row = idx - startIdx;
                     float ry = topY - 58.0f - row * 24.0f;
                     auto const& mk = markers[static_cast<size_t>(idx)];
-                    int ti = findTierIndex(tiers, mk.frames);
+                    int ti = findTierIndex(tiers, resolveDisplayFrames(mk.frames, m_cfg.cbfMode));
                     ccColor3B col = tiers[static_cast<size_t>(ti)].color;
 
                     std::string cTag = mk.comment.empty() ? "" : " [C]";
@@ -634,7 +629,6 @@ private:
         }
     }
 
-    // Callbacks
     void onStartScanBtn(CCObject*) {
         if (m_recordedRunClicks == 0) {
             FLAlertLayer::create(

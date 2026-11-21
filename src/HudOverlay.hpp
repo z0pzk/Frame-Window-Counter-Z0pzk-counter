@@ -63,8 +63,6 @@ private:
     double m_plannedTotalPrecision = 0.0;
     double m_levelProgressPct = 0.0;
 
-    int m_fp240Count = 0;
-    double m_lastFpTime = -10.0;
     double m_lastCalloutTime = -10.0;
 
     CCSprite* makeRingSprite() {
@@ -85,16 +83,6 @@ private:
             spr->setBlendFunc(ccBlendFunc{ GL_SRC_ALPHA, GL_ONE });
         }
         return spr;
-    }
-
-    static std::string ordinalStr(int n) {
-        if (n % 100 >= 11 && n % 100 <= 13) return fmt::format("{}TH", n);
-        switch (n % 10) {
-            case 1:  return fmt::format("{}ST", n);
-            case 2:  return fmt::format("{}ND", n);
-            case 3:  return fmt::format("{}RD", n);
-            default: return fmt::format("{}TH", n);
-        }
     }
 
     void buildScanBanner() {
@@ -420,8 +408,6 @@ public:
         m_lastHz = 0.0;
         m_rawPrecision = 0.0;
         m_levelProgressPct = 0.0;
-        m_fp240Count = 0;
-        m_lastFpTime = -10.0;
         m_lastCalloutTime = -10.0;
         m_calloutAge = 999.0f;
 
@@ -475,7 +461,8 @@ public:
         ensureWorldContainer(worldParent);
 
         double fps = static_cast<double>(m_cfg.refFps);
-        double displayFrames = m_cfg.cbfMode ? frames : std::max(1.0, std::round(frames));
+        double displayFrames = resolveDisplayFrames(frames, m_cfg.cbfMode);
+        double rawMs = framesToMs(frames, fps);
         m_lastMs = framesToMs(displayFrames, fps);
         m_lastHz = framesToHz(displayFrames, fps);
 
@@ -485,7 +472,7 @@ public:
         int tierIdx = findTierIndex(m_tiers, displayFrames);
         auto const& tier = m_tiers[static_cast<size_t>(tierIdx)];
 
-        // 1) Update Tier Row + Trigger BRIGHT Additive White Glow centered on the number!
+        // 1) Update Tier Row + Bright Additive White Glow centered on the number!
         if (tierIdx >= 0 && tierIdx < static_cast<int>(m_rows.size())) {
             auto& row = m_rows[static_cast<size_t>(tierIdx)];
             row.count++;
@@ -512,47 +499,23 @@ public:
         m_rawPrecision += clickPrecisionWeight(m_lastMs);
         updateBottomNumbers();
 
-        // 4) Callout Comments (Manual comment always wins; Auto Comments on real tight FPs / spam!)
+        // 4) Comments: Manual comments + clean non-numbered Auto Comments (NO "1ST/2ND/3RD 240HZ FP" spam!)
+        // Evaluated on rawMs so switching tier styles (0-1 vs 1/2/3) NEVER changes which clicks trigger comments!
         if (!manualComment.empty()) {
             showCallout(manualComment, tier.color);
             m_lastCalloutTime = simTime;
         } else if (m_cfg.showAutoComments) {
-            if (m_lastMs <= 4.35) {
-                m_fp240Count++;
-                bool isBackToBack = (simTime - m_lastFpTime) <= 0.45 && m_fp240Count >= 2;
-                m_lastFpTime = simTime;
-
-                std::string numStr = formatCircleNumber(displayFrames, m_cfg.cbfMode);
-                if (isBackToBack) {
-                    showCallout(
-                        fmt::format("{} 240HZ FRAME PERFECT\nBACK-TO-BACK ({}F)", ordinalStr(m_fp240Count), numStr),
-                        tier.color
-                    );
-                } else if (m_cfg.cbfMode) {
-                    double loEst = std::max(0.1, displayFrames - 0.35);
-                    double hiEst = displayFrames + 0.35;
-                    showCallout(
-                        fmt::format("{} 240HZ FRAME PERFECT\nCAN BE FROM ~({:.1f}-{:.1f})", ordinalStr(m_fp240Count), loEst, hiEst),
-                        tier.color
-                    );
-                } else {
-                    showCallout(
-                        fmt::format("{} 240HZ FRAME PERFECT", ordinalStr(m_fp240Count)),
-                        tier.color
-                    );
-                }
-                m_lastCalloutTime = simTime;
-            } else if (m_lastMs <= 6.25 && (simTime - m_lastCalloutTime) > 1.2) {
-                double loEst = std::max(0.8, displayFrames - 0.4);
-                double hiEst = displayFrames + 0.4;
+            if (liveCps >= 11.0 && (simTime - m_lastCalloutTime) > 1.4) {
                 showCallout(
-                    fmt::format("240HZ FP CONTENDER\nCAN BE FROM ~({:.1f}-{:.1f})", loEst, hiEst),
+                    fmt::format("{:.1f} CPS SPAM\n(WINDOW {})", liveCps, formatCircleNumber(displayFrames, m_cfg.cbfMode)),
                     tier.color
                 );
                 m_lastCalloutTime = simTime;
-            } else if (liveCps >= 11.0 && (simTime - m_lastCalloutTime) > 1.5) {
+            } else if (rawMs <= 5.50 && (simTime - m_lastCalloutTime) > 1.2) {
+                double loEst = std::max(0.1, frames - 0.35);
+                double hiEst = frames + 0.35;
                 showCallout(
-                    fmt::format("{:.1f} CPS SPAM\n(WINDOW {})", liveCps, formatCircleNumber(displayFrames, m_cfg.cbfMode)),
+                    fmt::format("CAN BE FROM ~({:.1f}-{:.1f})", loEst, hiEst),
                     tier.color
                 );
                 m_lastCalloutTime = simTime;

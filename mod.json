@@ -8,9 +8,9 @@
     },
     "id": "z0pzk.frame-window-counter",
     "name": "Frame Window Counter",
-    "version": "v7.0.0",
+    "version": "v8.0.0",
     "developer": "z0pzk",
-    "description": "Exact GD 2.2 Frame & CBF Window Counter with strict exact-physics Auto solver, Real-Engine Pathfinder Scanner (Scan Exact), bright additive tier glow, auto & manual callout comments, 1->24 / CBF / Discrete tier tables, and independent per-tier sounds.",
+    "description": "Exact GD 2.2 Frame & CBF Window Counter with true 0.9-scaled GD physics, floor rounding, death-click rejection, direct-engine Scan Exact pathfinder, bright additive tier glow, callout comments, and per-tier custom sounds.",
     "resources": {
         "files": [
             "resources/*.wav",
