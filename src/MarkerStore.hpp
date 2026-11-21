@@ -12,9 +12,9 @@ namespace fwc {
 
 struct ManualMarker {
     float x = 0.0f;
-    double timeSec = 0.0;
+    float y = 30.0f;
     double frames = 1.0;
-    ClickKind kind = ClickKind::Normal;
+    std::string comment;
     bool triggered = false;
 };
 
@@ -37,11 +37,18 @@ private:
         return out.empty() ? "level" : out;
     }
 
+    static std::string sanitizeComment(std::string s) {
+        for (char& c : s) {
+            if (c == '|' || c == '\n' || c == '\r') c = ' ';
+        }
+        return s;
+    }
+
     std::filesystem::path filePathFor(std::string const& key) const {
-        auto dir = Mod::get()->getSaveDir() / "markers";
+        auto dir = Mod::get()->getSaveDir() / "markers_v3";
         std::error_code ec;
         std::filesystem::create_directories(dir, ec);
-        return dir / (key + ".fc");
+        return dir / (key + ".fc3");
     }
 
 public:
@@ -54,13 +61,10 @@ public:
         if (!level) return "unknown_level";
         int id = level->m_levelID.value();
         std::string name = sanitizeKey(std::string(level->m_levelName));
-        if (id > 0) {
-            return fmt::format("id_{}_{}", id, name);
-        }
+        if (id > 0) return fmt::format("id_{}_{}", id, name);
         return fmt::format("local_{}", name);
     }
 
-    std::string const& currentKey() const { return m_currentKey; }
     std::vector<ManualMarker>& markers() { return m_markers; }
     std::vector<ManualMarker> const& markers() const { return m_markers; }
 
@@ -76,23 +80,21 @@ public:
         while (std::getline(in, line)) {
             if (line.empty() || line[0] == '#') continue;
             std::stringstream ss(line);
-            std::string segX, segT, segF, segK;
+            std::string segX, segY, segF, segC;
             if (!std::getline(ss, segX, '|')) continue;
-            if (!std::getline(ss, segT, '|')) continue;
+            if (!std::getline(ss, segY, '|')) continue;
             if (!std::getline(ss, segF, '|')) continue;
-            if (!std::getline(ss, segK, '|')) segK = "0";
+            std::getline(ss, segC); // optional comment
 
             try {
                 ManualMarker m;
                 m.x = std::stof(segX);
-                m.timeSec = std::stod(segT);
+                m.y = std::stof(segY);
                 m.frames = std::max(0.05, std::stod(segF));
-                int k = std::clamp(std::stoi(segK), 0, 4);
-                m.kind = static_cast<ClickKind>(k);
+                m.comment = segC;
                 m.triggered = false;
                 m_markers.push_back(m);
-            } catch (...) {
-            }
+            } catch (...) {}
         }
         sortMarkers();
     }
@@ -103,9 +105,9 @@ public:
         std::ofstream out(path, std::ios::trunc);
         if (!out.is_open()) return;
 
-        out << "# FrameWindowCounter Manual Markers: x|timeSec|frames|kind\n";
+        out << "# FWC v3 Markers: x|y|frames|comment\n";
         for (auto const& m : m_markers) {
-            out << m.x << "|" << m.timeSec << "|" << m.frames << "|" << static_cast<int>(m.kind) << "\n";
+            out << m.x << "|" << m.y << "|" << m.frames << "|" << sanitizeComment(m.comment) << "\n";
         }
     }
 
@@ -116,26 +118,24 @@ public:
     }
 
     void resetTriggers() {
-        for (auto& m : m_markers) {
-            m.triggered = false;
-        }
+        for (auto& m : m_markers) m.triggered = false;
     }
 
-    void addMarker(float x, double timeSec, double frames, ClickKind kind) {
+    void addMarker(float x, float y, double frames, std::string const& comment = "") {
         for (auto& existing : m_markers) {
-            if (std::fabs(existing.x - x) < 1.5f) {
+            if (std::fabs(existing.x - x) < 2.0f) {
+                existing.y = y;
                 existing.frames = std::max(0.05, frames);
-                existing.kind = kind;
-                existing.timeSec = timeSec;
+                if (!comment.empty()) existing.comment = sanitizeComment(comment);
                 saveCurrent();
                 return;
             }
         }
         ManualMarker m;
         m.x = x;
-        m.timeSec = timeSec;
+        m.y = y;
         m.frames = std::max(0.05, frames);
-        m.kind = kind;
+        m.comment = sanitizeComment(comment);
         m.triggered = false;
         m_markers.push_back(m);
         sortMarkers();

@@ -8,9 +8,9 @@
     },
     "id": "z0pzk.frame-window-counter",
     "name": "Frame Window Counter",
-    "version": "v2.0.0",
+    "version": "v3.0.0",
     "developer": "z0pzk",
-    "description": "Frame Window Counter (FB-style) with physics-based Auto mode, Manual marker mode, crisp world-space click circles, classic & custom bell sounds, and native GD UI.",
+    "description": "NaN-Counter-style CBF & Frame Window Counter with real survival-based Auto physics analyzer, Manual mode, persistent bold circles, tier table with glow highlights, live ms/Hz, precision stats, callout comments, and full bot/render support.",
     "resources": {
         "files": [
             "resources/*.wav",
@@ -21,13 +21,11 @@
         "enabled": {
             "type": "bool",
             "name": "Enable Mod",
-            "description": "Toggle the entire Frame Window Counter mod.",
             "default": true
         },
         "mode": {
             "type": "string",
             "name": "Counter Mode",
-            "description": "Auto (live physics window estimation) or Manual (marker playback).",
             "default": "auto",
             "one-of": [
                 "auto",
@@ -37,109 +35,118 @@
         "ref-fps": {
             "type": "int",
             "name": "Reference FPS",
-            "description": "Target FPS scale for frame counts (e.g. 60, 240, 360, 6000).",
             "default": 240,
             "min": 30,
             "max": 100000
         },
-        "auto-tps-adapt": {
+        "cbf-mode": {
             "type": "bool",
-            "name": "Adapt to Live TPS",
-            "description": "Measure live physics TPS from game delta time (bot & speedhack safe).",
+            "name": "CBF Sub-Frame Mode",
             "default": true
+        },
+        "table-style": {
+            "type": "string",
+            "name": "Table Tier Style",
+            "default": "cbf",
+            "one-of": [
+                "cbf",
+                "discrete"
+            ]
         },
         "show-circles": {
             "type": "bool",
             "name": "Show Click Circles",
-            "description": "Spawn color-coded rings at every click position in the level.",
+            "default": true
+        },
+        "persistent-circles": {
+            "type": "bool",
+            "name": "Persistent Circles (No Fade)",
             "default": true
         },
         "circle-scale": {
             "type": "float",
             "name": "Circle Size",
-            "description": "Size multiplier for click circles.",
             "default": 1.0,
             "min": 0.4,
             "max": 2.5
         },
         "show-circle-label": {
             "type": "bool",
-            "name": "Show Frame Label on Circle",
-            "description": "Display the frame window text above each click ring.",
+            "name": "Show Numbers Next to Circles",
             "default": true
         },
-        "show-hud": {
+        "show-tier-table": {
             "type": "bool",
-            "name": "Show Bottom-Left HUD",
-            "description": "Display the bottom-left frame counter overlay.",
+            "name": "Show Top-Left Tier Table",
             "default": true
         },
-        "show-percentages": {
+        "show-ms-hz": {
             "type": "bool",
-            "name": "Show Percentages in HUD",
-            "description": "Display Frame Perfect % and estimated Pass Probability %.",
+            "name": "Show Reaction ms & Hz",
             "default": true
         },
-        "show-special-stats": {
+        "show-bottom-stats": {
             "type": "bool",
-            "name": "Show S-Frames / Swifts / Multiclicks",
-            "description": "Show special click counters in the HUD.",
-            "default": false
-        },
-        "detect-swifts": {
-            "type": "bool",
-            "name": "Detect Swift Clicks",
-            "description": "Enable Swift click detection on quick press-release inputs.",
-            "default": false
-        },
-        "detect-multiclicks": {
-            "type": "bool",
-            "name": "Detect Multiclicks",
-            "description": "Enable Multiclick tagging on rapid consecutive clicks.",
-            "default": false
-        },
-        "show-banner": {
-            "type": "bool",
-            "name": "Show Intro Banner",
-            "description": "Show the level info & legend banner at the start of an attempt.",
+            "name": "Show Bottom-Left % & Score",
             "default": true
+        },
+        "show-watermark": {
+            "type": "bool",
+            "name": "Show Top-Right Watermark",
+            "default": true
+        },
+        "watermark-text": {
+            "type": "string",
+            "name": "Watermark Text",
+            "default": "FWC COUNTER"
+        },
+        "show-auto-comments": {
+            "type": "bool",
+            "name": "Show Callout Comments",
+            "default": true
+        },
+        "comment-fade-sec": {
+            "type": "float",
+            "name": "Comment Fade Time (sec)",
+            "default": 2.2,
+            "min": 0.5,
+            "max": 8.0
+        },
+        "banner-mode": {
+            "type": "string",
+            "name": "Intro Screen Mode",
+            "default": "first",
+            "one-of": [
+                "off",
+                "first",
+                "always"
+            ]
         },
         "banner-duration": {
             "type": "float",
-            "name": "Banner Duration (sec)",
-            "description": "How long the intro banner stays visible in game seconds.",
-            "default": 3.5,
-            "min": 1.0,
-            "max": 10.0
+            "name": "Intro Duration (sec)",
+            "default": 2.8,
+            "min": 0.8,
+            "max": 8.0
         },
         "banner-comment": {
             "type": "string",
-            "name": "Banner Comment",
-            "description": "Optional comment shown next to the level name (leave empty to hide).",
+            "name": "Intro Subtitle / Comment",
             "default": ""
-        },
-        "show-raw-precision": {
-            "type": "bool",
-            "name": "Show Precision Line",
-            "description": "Show the optional precision text line inside the intro banner.",
-            "default": true
         },
         "raw-precision-text": {
             "type": "string",
-            "name": "Precision Text",
-            "description": "Optional precision text in the intro banner (leave empty to hide).",
+            "name": "Intro Bottom Line",
             "default": ""
         },
         "sound-enabled": {
             "type": "bool",
-            "name": "Enable Bell Sounds",
-            "description": "Play a bell sound on clicks.",
+            "name": "Enable Bell Sound",
             "default": true
         },
         "sound-preset": {
             "type": "string",
-            "name": "Bell Sound",
-            "description": "Choose built-in bell or custom sound file.",
+            "name": "Bell Preset",
             "default": "classic",
             "one-of": [
                 "classic",
@@ -152,13 +159,11 @@
         "custom-sound-file": {
             "type": "string",
             "name": "Custom Sound File",
-            "description": "Filename inside the mod sounds folder (or full path to .wav/.mp3/.ogg).",
             "default": ""
         },
         "sound-volume": {
             "type": "float",
             "name": "Bell Volume",
-            "description": "Volume multiplier for bell sounds.",
             "default": 0.75,
             "min": 0.0,
             "max": 1.0
@@ -166,21 +171,18 @@
         "sound-pitch": {
             "type": "float",
             "name": "Bell Base Pitch",
-            "description": "Base pitch multiplier for bell sounds.",
             "default": 1.0,
             "min": 0.4,
             "max": 2.5
         },
         "dynamic-pitch": {
             "type": "bool",
-            "name": "Auto Pitch by Difficulty",
-            "description": "Raise pitch automatically on tighter frame windows.",
+            "name": "Auto Pitch by Tightness",
             "default": true
         },
         "capture-to-manual": {
             "type": "bool",
-            "name": "Capture Clicks to Manual List",
-            "description": "Record clicks from your run/bot into the Manual Markers list.",
+            "name": "Capture Clicks to Manual",
             "default": false
         }
     }

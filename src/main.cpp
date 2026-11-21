@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <deque>
 #include <vector>
 
 using namespace geode::prelude;
@@ -20,7 +21,13 @@ namespace {
 enum class ObjKind : uint8_t {
     Solid = 0,
     Hazard = 1,
-    Orb = 2
+    YellowOrb = 2,
+    PinkOrb = 3,
+    RedOrb = 4,
+    BlueOrb = 5,
+    GreenOrb = 6,
+    BlackOrb = 7,
+    DashOrb = 8
 };
 
 struct SpatialObj {
@@ -34,8 +41,8 @@ struct SpatialObj {
 struct SimParams {
     float x0 = 0.0f;
     float y0 = 0.0f;
-    float halfW = 14.0f;
-    float halfH = 14.0f;
+    float halfW = 15.0f;
+    float halfH = 15.0f;
     float vx = 311.58f;
     float vy0 = 0.0f;
     bool upsideDown = false;
@@ -46,7 +53,12 @@ struct SimParams {
     bool isUfo = false;
     bool isSpider = false;
     bool onGround = true;
+    bool isPress = true; // true = button down, false = button release (for Wave!)
 };
+
+inline bool isOrbKind(ObjKind k) {
+    return static_cast<uint8_t>(k) >= static_cast<uint8_t>(ObjKind::YellowOrb);
+}
 
 } // namespace
 
@@ -55,21 +67,28 @@ class $modify(FWCPlayLayer, PlayLayer) {
         fwc::ModConfig cfg;
         fwc::HudOverlay* overlay = nullptr;
         std::vector<SpatialObj> spatialCache;
+        bool objectsIndexed = false;
 
         double simTime = 0.0;
         double smoothTps = 240.0;
         float prevPlayerX = 0.0f;
         float measuredSpeedX = 311.58f;
 
-        double lastPressTime[2] = { -10.0, -10.0 };
-        double lastClickEventTime[2] = { -10.0, -10.0 };
-        bool isHolding[2] = { false, false };
+        // Deduplication between GJBaseGameLayer::handleButton and PlayerObject::pushButton/releaseButton
+        double lastDedupTime[2][2] = { { -1.0, -1.0 }, { -1.0, -1.0 } }; // [pIdx][down?1:0]
+        float lastDedupX[2][2] = { { -9999.0f, -9999.0f }, { -9999.0f, -9999.0f } };
+
+        // Live CPS sliding window (last 1.0 game second)
+        std::deque<double> recentClicks;
     };
 
-    void indexLevelObjects() {
+    void ensureObjectsIndexed() {
         auto& f = *m_fields.self();
+        if (f.objectsIndexed && !f.spatialCache.empty()) return;
+        if (!m_objects || m_objects->count() == 0) return;
+
         f.spatialCache.clear();
-        if (!m_objects) return;
+        f.spatialCache.reserve(m_objects->count() / 2);
 
         for (auto* obj : CCArrayExt<GameObject*>(m_objects)) {
             if (!obj) continue;
@@ -84,34 +103,33 @@ class $modify(FWCPlayLayer, PlayLayer) {
             } else if (t == GameObjectType::Solid || t == GameObjectType::Slope) {
                 kind = ObjKind::Solid;
                 keep = true;
-            } else if (
-                t == GameObjectType::YellowJumpRing ||
-                t == GameObjectType::PinkJumpRing ||
-                t == GameObjectType::RedJumpRing ||
-                t == GameObjectType::GravityRing ||
-                t == GameObjectType::GreenRing ||
-                t == GameObjectType::DashRing ||
-                t == GameObjectType::GravityDashRing ||
-                t == GameObjectType::DropRing
-            ) {
-                kind = ObjKind::Orb;
-                keep = true;
+            } else if (t == GameObjectType::YellowJumpRing) {
+                kind = ObjKind::YellowOrb; keep = true;
+            } else if (t == GameObjectType::PinkJumpRing) {
+                kind = ObjKind::PinkOrb; keep = true;
+            } else if (t == GameObjectType::RedJumpRing) {
+                kind = ObjKind::RedOrb; keep = true;
+            } else if (t == GameObjectType::GravityRing) {
+                kind = ObjKind::BlueOrb; keep = true;
+            } else if (t == GameObjectType::GreenRing) {
+                kind = ObjKind::GreenOrb; keep = true;
+            } else if (t == GameObjectType::DropRing) {
+                kind = ObjKind::BlackOrb; keep = true;
+            } else if (t == GameObjectType::DashRing || t == GameObjectType::GravityDashRing) {
+                kind = ObjKind::DashOrb; keep = true;
             }
 
             if (!keep) continue;
 
+            // Use GD's actual collision rectangle directly (GD already scales spikes to their real hitbox!)
             CCRect r = obj->getObjectRect();
-            if (r.size.width <= 0.1f || r.size.height <= 0.1f) continue;
-
-            // Tighten hazard hitboxes slightly to match GD's forgiving spike inner hitbox
-            float shrinkX = (kind == ObjKind::Hazard) ? (r.size.width * 0.22f) : 0.0f;
-            float shrinkY = (kind == ObjKind::Hazard) ? (r.size.height * 0.22f) : 0.0f;
+            if (r.size.width <= 0.05f || r.size.height <= 0.05f) continue;
 
             SpatialObj s;
-            s.minX = r.getMinX() + shrinkX;
-            s.maxX = r.getMaxX() - shrinkX;
-            s.minY = r.getMinY() + shrinkY;
-            s.maxY = r.getMaxY() - shrinkY;
+            s.minX = r.getMinX();
+            s.maxX = r.getMaxX();
+            s.minY = r.getMinY();
+            s.maxY = r.getMaxY();
             s.kind = kind;
             f.spatialCache.push_back(s);
         }
@@ -119,16 +137,16 @@ class $modify(FWCPlayLayer, PlayLayer) {
         std::sort(f.spatialCache.begin(), f.spatialCache.end(), [](SpatialObj const& a, SpatialObj const& b) {
             return a.minX < b.minX;
         });
+        f.objectsIndexed = true;
     }
 
-    // Gather local slice of objects around [xMin, xMax] for ultra-fast probing
     void gatherLocalSlice(float xMin, float xMax, std::vector<SpatialObj>& out) {
         auto const& cache = m_fields->spatialCache;
         out.clear();
         if (cache.empty()) return;
 
         auto it = std::lower_bound(
-            cache.begin(), cache.end(), xMin - 60.0f,
+            cache.begin(), cache.end(), xMin - 90.0f,
             [](SpatialObj const& a, float val) { return a.minX < val; }
         );
         for (; it != cache.end() && it->minX <= xMax; ++it) {
@@ -138,7 +156,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
     }
 
-    static bool hitsHazardAt(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh, bool waveMode) {
+    static bool hitsHazard(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh, bool waveMode) {
         float px0 = cx - hw;
         float px1 = cx + hw;
         float py0 = cy - hh;
@@ -153,12 +171,12 @@ class $modify(FWCPlayLayer, PlayLayer) {
         return false;
     }
 
-    static bool hitsSolidSideAt(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh) {
-        // Inner core collision against solid blocks (side wall crash)
-        float px0 = cx - hw * 0.55f;
-        float px1 = cx + hw * 0.55f;
-        float py0 = cy - hh * 0.35f;
-        float py1 = cy + hh * 0.35f;
+    // Inner blue core (30% of player size) colliding with a solid block kills the player in GD
+    static bool hitsSolidCore(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh) {
+        float px0 = cx - hw * 0.32f;
+        float px1 = cx + hw * 0.32f;
+        float py0 = cy - hh * 0.32f;
+        float py1 = cy + hh * 0.32f;
         for (auto const& o : local) {
             if (o.kind == ObjKind::Solid) {
                 if (px1 > o.minX && px0 < o.maxX && py1 > o.minY && py0 < o.maxY) {
@@ -170,11 +188,11 @@ class $modify(FWCPlayLayer, PlayLayer) {
     }
 
     static bool hasGroundSupport(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh, bool upsideDown) {
-        if (!upsideDown && cy - hh <= 6.0f) return true; // GD floor y=0
-        float px0 = cx - hw;
-        float px1 = cx + hw;
-        float probeY0 = upsideDown ? (cy + hh - 2.0f) : (cy - hh - 6.0f);
-        float probeY1 = upsideDown ? (cy + hh + 6.0f) : (cy - hh + 2.0f);
+        if (!upsideDown && cy - hh <= 4.0f) return true; // Main floor y = 0
+        float px0 = cx - hw * 0.95f;
+        float px1 = cx + hw * 0.95f;
+        float probeY0 = upsideDown ? (cy + hh - 3.0f) : (cy - hh - 5.0f);
+        float probeY1 = upsideDown ? (cy + hh + 5.0f) : (cy - hh + 3.0f);
         for (auto const& o : local) {
             if (o.kind == ObjKind::Solid) {
                 if (px1 > o.minX && px0 < o.maxX && probeY1 >= o.minY && probeY0 <= o.maxY) {
@@ -185,109 +203,131 @@ class $modify(FWCPlayLayer, PlayLayer) {
         return false;
     }
 
-    static bool overlapsOrbAt(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh) {
-        float px0 = cx - hw - 4.0f;
-        float px1 = cx + hw + 4.0f;
-        float py0 = cy - hh - 4.0f;
-        float py1 = cy + hh + 4.0f;
+    static ObjKind findOverlappingOrb(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh, bool& found) {
+        float px0 = cx - hw - 3.0f;
+        float px1 = cx + hw + 3.0f;
+        float py0 = cy - hh - 3.0f;
+        float py1 = cy + hh + 3.0f;
         for (auto const& o : local) {
-            if (o.kind == ObjKind::Orb) {
+            if (isOrbKind(o.kind)) {
                 if (px1 > o.minX && px0 < o.maxX && py1 > o.minY && py0 < o.maxY) {
-                    return true;
+                    found = true;
+                    return o.kind;
                 }
             }
         }
-        return false;
+        found = false;
+        return ObjKind::Solid;
     }
 
-    // Simulate a candidate click shifted by deltaT seconds (negative = earlier, positive = later)
-    static bool simulateCandidateClick(SimParams const& p, std::vector<SpatialObj> const& local, float deltaT, bool clickWasOrb) {
+    // Returns survival distance (in GD X-units) achieved by a click shifted by deltaT seconds.
+    // Returns -1.0f if the click is invalid (missed orb, walked off ledge, or died before clicking).
+    static float simulateSurvivalDist(SimParams const& p, std::vector<SpatialObj> const& local, float deltaT, bool clickWasOrb, ObjKind orbKind) {
         constexpr float dt = 1.0f / 240.0f;
         float gravSign = p.upsideDown ? -1.0f : 1.0f;
-        float sizeScale = p.mini ? 0.62f : 1.0f;
-
-        // 1) Compute shifted click position (xClick, yClick)
         float xClick = p.x0 + p.vx * deltaT;
         float yClick = p.y0;
 
+        float hazHW = p.isWave ? (p.halfW * 0.34f) : (p.halfW * 0.85f);
+        float hazHH = p.isWave ? (p.halfH * 0.34f) : (p.halfH * 0.85f);
+
+        // 1) Pre-click path (when shifting later or earlier)
         if (p.isWave) {
             float slope = p.mini ? 2.0f : 1.0f;
-            float preVy = -gravSign * p.vx * slope;
+            // Before a press, wave was going down (-gravSign); before a release, wave was going up (+gravSign)
+            float preVy = (p.isPress ? -1.0f : 1.0f) * gravSign * p.vx * slope;
             yClick = p.y0 + preVy * deltaT;
-            // Check path from x0 to xClick if delayed
             if (deltaT > 0.0f) {
                 int preSteps = std::max(1, static_cast<int>(std::ceil(deltaT / dt)));
                 for (int s = 1; s <= preSteps; ++s) {
                     float ts = (deltaT * static_cast<float>(s)) / static_cast<float>(preSteps);
-                    if (hitsHazardAt(local, p.x0 + p.vx * ts, p.y0 + preVy * ts, p.halfW * 0.45f, p.halfH * 0.45f, true)) {
-                        return false;
+                    float tx = p.x0 + p.vx * ts;
+                    float ty = p.y0 + preVy * ts;
+                    if (ty < hazHH || hitsHazard(local, tx, ty, hazHW, hazHH, true)) {
+                        return -1.0f;
+                    }
+                }
+            }
+        } else if (p.onGround && !clickWasOrb && !p.isShip && !p.isUfo) {
+            if (!hasGroundSupport(local, xClick, yClick, p.halfW, p.halfH, p.upsideDown)) {
+                return -1.0f; // Fell off platform before clicking!
+            }
+            if (deltaT > 0.0f) {
+                int preSteps = std::max(1, static_cast<int>(std::ceil(deltaT / dt)));
+                for (int s = 1; s <= preSteps; ++s) {
+                    float ts = (deltaT * static_cast<float>(s)) / static_cast<float>(preSteps);
+                    float tx = p.x0 + p.vx * ts;
+                    if (hitsHazard(local, tx, yClick, hazHW, hazHH, false) ||
+                        hitsSolidCore(local, tx, yClick, p.halfW, p.halfH)) {
+                        return -1.0f;
                     }
                 }
             }
         } else {
-            // For ground modes (Cube/Robot/Ball/Spider), if clicking on ground and NOT an orb:
-            if (p.onGround && !clickWasOrb && !p.isShip && !p.isUfo) {
-                if (!hasGroundSupport(local, xClick, yClick, p.halfW, p.halfH, p.upsideDown)) {
-                    return false; // Fell off the ledge before clicking!
-                }
-                if (deltaT > 0.0f) {
-                    // Check we didn't run into a spike before jumping
-                    int preSteps = std::max(1, static_cast<int>(std::ceil(deltaT / dt)));
-                    for (int s = 1; s <= preSteps; ++s) {
-                        float ts = (deltaT * static_cast<float>(s)) / static_cast<float>(preSteps);
-                        float tx = p.x0 + p.vx * ts;
-                        if (hitsHazardAt(local, tx, yClick, p.halfW * 0.78f, p.halfH * 0.78f, false) ||
-                            hitsSolidSideAt(local, tx, yClick, p.halfW, p.halfH)) {
-                            return false;
-                        }
-                    }
-                }
-            } else {
-                // Airborne click (Ship, UFO, or Orb)
-                float preG = (p.isShip ? -950.0f : -2750.0f) * gravSign;
-                yClick = p.y0 + p.vy0 * deltaT + 0.5f * preG * deltaT * deltaT;
-            }
+            float preG = (p.isShip ? -1050.0f : -3216.0f) * gravSign;
+            yClick = p.y0 + p.vy0 * deltaT + 0.5f * preG * deltaT * deltaT;
         }
 
         if (clickWasOrb) {
-            if (!overlapsOrbAt(local, xClick, yClick, p.halfW, p.halfH)) {
-                return false; // Missed the orb hitbox!
-            }
+            bool stillOnOrb = false;
+            findOverlappingOrb(local, xClick, yClick, p.halfW, p.halfH, stillOnOrb);
+            if (!stillOnOrb) return -1.0f; // Missed the orb hitbox!
         }
 
-        // 2) Simulate post-click trajectory for ~0.46s forward
+        // 2) Post-click kinematics (calibrated to real GD 2.2 jump height & distance!)
         float x = xClick;
         float y = yClick;
         float vy = 0.0f;
-        float g = -2780.0f * gravSign;
+        float g = (p.mini ? -3920.0f : -3216.0f) * gravSign;
 
-        if (p.isWave) {
+        if (clickWasOrb) {
+            switch (orbKind) {
+                case ObjKind::YellowOrb: vy = (p.mini ? 595.0f : 644.0f) * gravSign; break;
+                case ObjKind::PinkOrb:   vy = (p.mini ? 470.0f : 515.0f) * gravSign; break;
+                case ObjKind::RedOrb:    vy = (p.mini ? 720.0f : 790.0f) * gravSign; break;
+                case ObjKind::BlueOrb:   gravSign = -gravSign; g = -g; vy = 220.0f * gravSign; break;
+                case ObjKind::GreenOrb:  gravSign = -gravSign; g = -g; vy = 615.0f * gravSign; break;
+                case ObjKind::BlackOrb:  vy = -880.0f * gravSign; break;
+                case ObjKind::DashOrb:   vy = 0.0f; g = 0.0f; break;
+                default:                 vy = 644.0f * gravSign; break;
+            }
+        } else if (p.isWave) {
             float slope = p.mini ? 2.0f : 1.0f;
-            vy = gravSign * p.vx * slope;
+            vy = (p.isPress ? 1.0f : -1.0f) * gravSign * p.vx * slope;
             g = 0.0f;
         } else if (p.isShip) {
-            vy = p.vy0 + 180.0f * gravSign;
-            g = 1100.0f * gravSign;
+            vy = p.vy0 + (p.isPress ? 150.0f : -150.0f) * gravSign;
+            g = (p.isPress ? 1180.0f : -1050.0f) * gravSign;
         } else if (p.isUfo) {
-            vy = 475.0f * gravSign * (p.mini ? 0.85f : 1.0f);
-            g = -2550.0f * gravSign;
+            vy = (p.mini ? 430.0f : 480.0f) * gravSign;
+            g = (p.mini ? -3100.0f : -2650.0f) * gravSign;
         } else if (p.isBall) {
-            vy = -220.0f * gravSign;
-            g = 2200.0f * gravSign;
+            gravSign = -gravSign;
+            vy = 160.0f * gravSign;
+            g = -2650.0f * gravSign;
         } else if (p.isSpider) {
-            // Instant gravity teleport check
+            // Instant teleport along vertical ray until hitting a solid surface
+            float stepY = 4.0f * gravSign;
+            for (int k = 1; k <= 140; ++k) {
+                float ty = y + stepY * static_cast<float>(k);
+                if (hitsHazard(local, x, ty, hazHW, hazHH, false)) return 0.0f;
+                if (hasGroundSupport(local, x, ty, p.halfW, p.halfH, !p.upsideDown)) {
+                    y = ty;
+                    break;
+                }
+            }
+            gravSign = -gravSign;
             vy = 0.0f;
             g = 0.0f;
         } else {
-            // Cube / Robot jump arc (standard GD 1x cube jump ~11.18 * 54 = ~603 u/s, g ~ -2790 u/s^2)
-            vy = (p.mini ? 485.0f : 604.0f) * gravSign;
-            g = (p.mini ? -3050.0f : -2790.0f) * gravSign;
+            // Exact GD 1x / mini Cube jump (height 2.15 blocks, air distance 4.16 blocks at 1x speed)
+            vy = (p.mini ? 632.0f : 644.0f) * gravSign;
+            g = (p.mini ? -3920.0f : -3216.0f) * gravSign;
         }
 
-        constexpr int kSteps = 105; // ~0.4375 sec at 240Hz
-        float checkHW = p.isWave ? (p.halfW * 0.42f) : (p.halfW * 0.78f);
-        float checkHH = p.isWave ? (p.halfH * 0.42f) : (p.halfH * 0.78f);
-        (void)sizeScale;
+        // Simulate forward up to ~0.48s (enough to clear full triple spikes, orb chains, and wave corridors)
+        constexpr int kSteps = 115;
+        float maxDist = p.vx * (static_cast<float>(kSteps) * dt);
 
         for (int step = 1; step <= kSteps; ++step) {
             x += p.vx * dt;
@@ -295,45 +335,46 @@ class $modify(FWCPlayLayer, PlayLayer) {
             y += vy * dt;
 
             if (y < p.halfH && !p.upsideDown) {
+                if (p.isWave) return x - xClick;
                 y = p.halfH;
                 vy = 0.0f;
-                if (!p.isWave && step > 15) break; // Landed safely on floor
+                if (!p.isShip && step > 14) {
+                    // Safely landed on ground after full jump!
+                    return maxDist;
+                }
             }
 
-            if (hitsHazardAt(local, x, y, checkHW, checkHH, p.isWave)) {
-                return false;
+            if (hitsHazard(local, x, y, hazHW, hazHH, p.isWave)) {
+                return x - xClick;
             }
-            if (!p.isWave && hitsSolidSideAt(local, x, y, p.halfW, p.halfH)) {
-                return false;
+            if (!p.isWave && hitsSolidCore(local, x, y, p.halfW, p.halfH)) {
+                return x - xClick;
             }
 
-            // If cube/robot lands on a solid platform after apex, stop checking further
-            if (!p.isWave && !p.isShip && !p.isUfo && step > 18 && (vy * gravSign < 0.0f)) {
+            // Safely landed on a solid platform after apex
+            if (!p.isWave && !p.isShip && !p.isUfo && step > 16 && (vy * gravSign < 0.0f)) {
                 if (hasGroundSupport(local, x, y, p.halfW, p.halfH, p.upsideDown)) {
-                    break;
+                    return maxDist;
                 }
             }
         }
-        return true;
+        return maxDist;
     }
 
-    // Physics-probed Auto Mode frame window estimator
-    double estimateAutoWindowFrames(PlayerObject* player, double refFps) {
+    // Survival-based real frame window calculator (sub-frame 1/2400s resolution!)
+    // Returns < 0 if the click is a meaningless mid-air spam click that should be ignored.
+    double computeAutoWindowFrames(PlayerObject* player, bool isPress, double refFps) {
         auto& f = *m_fields.self();
-        double liveTps = std::clamp(f.smoothTps, 60.0, 2400.0);
-        double tickSec = 1.0 / std::max(240.0, liveTps);
-
-        if (!player || f.spatialCache.empty()) {
-            return std::max(1.0, (1.0 / 60.0) * refFps);
-        }
+        ensureObjectsIndexed();
+        if (!player) return -1.0;
 
         SimParams p;
         CCPoint pos = player->getPosition();
         CCRect rect = player->getObjectRect();
         p.x0 = pos.x;
         p.y0 = pos.y;
-        p.halfW = std::max(6.0f, rect.size.width * 0.5f);
-        p.halfH = std::max(6.0f, rect.size.height * 0.5f);
+        p.halfW = std::clamp(rect.size.width * 0.5f, 5.0f, 18.0f);
+        p.halfH = std::clamp(rect.size.height * 0.5f, 5.0f, 18.0f);
         p.vx = std::clamp(f.measuredSpeedX, 180.0f, 950.0f);
         p.vy0 = static_cast<float>(player->m_yVelocity) * 60.0f;
         p.upsideDown = player->m_isUpsideDown;
@@ -344,146 +385,140 @@ class $modify(FWCPlayLayer, PlayLayer) {
         p.isUfo = player->m_isBird;
         p.isSpider = player->m_isSpider;
         p.onGround = player->m_isOnGround;
+        p.isPress = isPress;
+
+        // Release events only matter on Wave (direction reversal)
+        if (!isPress && !p.isWave) {
+            return -1.0;
+        }
 
         std::vector<SpatialObj> local;
-        gatherLocalSlice(p.x0 - 90.0f, p.x0 + p.vx * 0.50f + 90.0f, local);
+        gatherLocalSlice(p.x0 - 110.0f, p.x0 + p.vx * 0.52f + 110.0f, local);
+
+        bool clickWasOrb = false;
+        ObjKind orbKind = findOverlappingOrb(local, p.x0, p.y0, p.halfW, p.halfH, clickWasOrb);
+
+        // Ignore useless mid-air clicks in Cube/Robot/Ball/Spider when not touching an orb!
+        if (!p.isWave && !p.isShip && !p.isUfo && !p.onGround && !clickWasOrb) {
+            return -1.0;
+        }
 
         if (local.empty()) {
-            return std::clamp(0.025 * refFps, 1.0, refFps * 0.5);
+            return std::clamp(0.045 * refFps, 1.0, refFps * 0.5);
         }
 
-        bool clickWasOrb = overlapsOrbAt(local, p.x0, p.y0, p.halfW, p.halfH);
+        // Step 1: Compute baseline survival distance for the ACTUAL click (deltaT = 0)
+        float baseSurv = simulateSurvivalDist(p, local, 0.0f, clickWasOrb, orbKind);
+        if (baseSurv < 12.0f) {
+            // Very tight or near-instant obstacle: compare against small probe radius
+            baseSurv = std::max(baseSurv, 18.0f);
+        }
+        // Any candidate click that dies significantly sooner than the actual click is DEAD!
+        float requiredSurv = baseSurv * 0.90f;
 
-        // Probe late bound (+deltaT) and early bound (-deltaT) in fine steps (0.5 tick = ~2.08ms)
-        float stepSec = static_cast<float>(tickSec * 0.5);
-        constexpr int kMaxHalfSteps = 22; // up to ~45ms each direction
+        // Step 2: Scan outward in 1/480s (~2.08ms) steps, then binary-search refine to ~0.13ms (2400+ subfps!)
+        constexpr float coarseStep = 1.0f / 480.0f;
+        constexpr int kMaxSteps = 26; // up to ~54ms each direction (~108ms total = ~26 frames @ 240Hz)
+
+        auto isAlive = [&](float dT) -> bool {
+            float d = simulateSurvivalDist(p, local, dT, clickWasOrb, orbKind);
+            return d >= requiredSurv;
+        };
 
         int safeLate = 0;
-        for (int k = 1; k <= kMaxHalfSteps; ++k) {
-            if (simulateCandidateClick(p, local, stepSec * static_cast<float>(k), clickWasOrb)) {
-                safeLate = k;
-            } else {
-                break;
-            }
+        for (int k = 1; k <= kMaxSteps; ++k) {
+            if (isAlive(coarseStep * static_cast<float>(k))) safeLate = k;
+            else break;
         }
-
-        int safeEarly = 0;
-        for (int k = 1; k <= kMaxHalfSteps; ++k) {
-            if (simulateCandidateClick(p, local, -stepSec * static_cast<float>(k), clickWasOrb)) {
-                safeEarly = k;
-            } else {
-                break;
-            }
-        }
-
-        // Binary-search refine the exact boundary for sub-frame precision!
-        float lateEdge = stepSec * static_cast<float>(safeLate);
-        if (safeLate < kMaxHalfSteps) {
+        float lateEdge = coarseStep * static_cast<float>(safeLate);
+        if (safeLate < kMaxSteps) {
             float lo = lateEdge;
-            float hi = lateEdge + stepSec;
-            for (int iter = 0; iter < 4; ++iter) {
+            float hi = lateEdge + coarseStep;
+            for (int it = 0; it < 5; ++it) {
                 float mid = 0.5f * (lo + hi);
-                if (simulateCandidateClick(p, local, mid, clickWasOrb)) lo = mid;
+                if (isAlive(mid)) lo = mid;
                 else hi = mid;
             }
             lateEdge = lo;
         }
 
-        float earlyEdge = stepSec * static_cast<float>(safeEarly);
-        if (safeEarly < kMaxHalfSteps) {
+        int safeEarly = 0;
+        for (int k = 1; k <= kMaxSteps; ++k) {
+            if (isAlive(-coarseStep * static_cast<float>(k))) safeEarly = k;
+            else break;
+        }
+        float earlyEdge = coarseStep * static_cast<float>(safeEarly);
+        if (safeEarly < kMaxSteps) {
             float lo = earlyEdge;
-            float hi = earlyEdge + stepSec;
-            for (int iter = 0; iter < 4; ++iter) {
+            float hi = earlyEdge + coarseStep;
+            for (int it = 0; it < 5; ++it) {
                 float mid = 0.5f * (lo + hi);
-                if (simulateCandidateClick(p, local, -mid, clickWasOrb)) lo = mid;
+                if (isAlive(-mid)) lo = mid;
                 else hi = mid;
             }
             earlyEdge = lo;
         }
 
-        // Total surviving timing window in seconds
         double windowSec = static_cast<double>(earlyEdge + lateEdge);
-
-        // If the click itself is strictly tighter than half a probe step, clamp around a tight 1-frame / sub-frame window
-        if (windowSec < tickSec * 0.25) {
-            windowSec = tickSec * 0.85;
-        } else if (safeEarly == kMaxHalfSteps && safeLate == kMaxHalfSteps) {
-            // Totally unobstructed open jump
-            windowSec = 0.028;
+        if (windowSec < 0.00025) {
+            windowSec = 0.0006; // tight sub-frame window
         }
 
-        double frames = windowSec * std::max(1.0, refFps);
-        return std::clamp(frames, 0.10, refFps * 0.5);
+        double frames = windowSec * std::max(30.0, refFps);
+        return std::clamp(frames, 0.08, refFps * 0.5);
     }
 
-    void triggerFeedback(PlayerObject* player, double frames, fwc::ClickKind kind) {
+    void triggerFeedback(PlayerObject* player, double frames, std::string const& customComment) {
         auto& f = *m_fields.self();
-        if (!f.cfg.enabled) return;
+        if (!f.cfg.enabled || !player) return;
 
-        if (f.overlay && player) {
-            f.overlay->onClickTriggered(player->getPosition(), frames, kind);
+        // Track live CPS over the last 1.0 game second
+        f.recentClicks.push_back(f.simTime);
+        while (!f.recentClicks.empty() && (f.simTime - f.recentClicks.front()) > 1.0) {
+            f.recentClicks.pop_front();
+        }
+        double liveCps = static_cast<double>(f.recentClicks.size());
+
+        if (f.overlay) {
+            f.overlay->onClickTriggered(m_objectLayer, player->getPosition(), frames, customComment, liveCps);
         }
 
         if (f.cfg.soundEnabled) {
-            auto tier = fwc::evaluateTier(frames, static_cast<double>(f.cfg.refFps));
-            float pitch = f.cfg.soundPitch + (f.cfg.dynamicPitch ? tier.pitchOffset : 0.0f);
+            double fps = static_cast<double>(f.cfg.refFps);
+            auto tiers = fwc::buildTiers(f.cfg.tableStyle, fps);
+            int ti = fwc::findTierIndex(tiers, frames);
+            float pitch = f.cfg.soundPitch + (f.cfg.dynamicPitch ? tiers[static_cast<size_t>(ti)].pitchOffset : 0.0f);
             fwc::AudioManager::get().playBell(f.cfg.soundPreset, f.cfg.customSoundFile, f.cfg.soundVolume, pitch);
         }
     }
 
-    void onInputEvent(bool down, int button, bool isPlayer1) {
-        if (button != 1) return;
-
+    void onPlayerClick(PlayerObject* player, bool down, bool isPlayer1) {
         auto& f = *m_fields.self();
         if (!f.cfg.enabled) return;
-        if (m_player1 && m_player1->m_isDead) return;
+        if (!player) player = isPlayer1 ? m_player1 : m_player2;
+        if (!player || player->m_isDead) return;
 
+        // Deduplicate between handleButton and PlayerObject::pushButton/releaseButton!
         int pIdx = isPlayer1 ? 0 : 1;
-        PlayerObject* player = isPlayer1 ? m_player1 : m_player2;
-        if (!player) player = m_player1;
+        int dIdx = down ? 1 : 0;
+        float curX = player->getPositionX();
+        if (std::fabs(f.simTime - f.lastDedupTime[pIdx][dIdx]) < 0.0005 &&
+            std::fabs(curX - f.lastDedupX[pIdx][dIdx]) < 0.25f) {
+            return;
+        }
+        f.lastDedupTime[pIdx][dIdx] = f.simTime;
+        f.lastDedupX[pIdx][dIdx] = curX;
 
-        double now = f.simTime;
-        double refFps = static_cast<double>(f.cfg.refFps);
+        if (f.cfg.mode == fwc::CounterMode::Auto || f.cfg.captureToManual) {
+            double estFrames = computeAutoWindowFrames(player, down, static_cast<double>(f.cfg.refFps));
+            if (estFrames < 0.0) return; // Ignored useless air click or non-wave release
 
-        if (down) {
-            double gapSec = now - f.lastClickEventTime[pIdx];
-            f.lastPressTime[pIdx] = now;
-            f.lastClickEventTime[pIdx] = now;
-            f.isHolding[pIdx] = true;
-
-            bool isMulti = f.cfg.detectMulticlicks && (gapSec > 0.0 && (gapSec * 1000.0) <= 130.0);
-
-            if (f.cfg.mode == fwc::CounterMode::Auto || f.cfg.captureToManual) {
-                double estFrames = estimateAutoWindowFrames(player, refFps);
-                fwc::ClickKind kind = fwc::ClickKind::Normal;
-                if (estFrames < 1.0) kind = fwc::ClickKind::SFrame;
-                else if (isMulti) kind = fwc::ClickKind::Multiclick;
-
-                if (f.cfg.captureToManual && player) {
-                    fwc::MarkerStore::get().addMarker(player->getPositionX(), now, estFrames, kind);
-                }
-
-                if (f.cfg.mode == fwc::CounterMode::Auto) {
-                    triggerFeedback(player, estFrames, kind);
-                }
+            if (f.cfg.captureToManual) {
+                fwc::MarkerStore::get().addMarker(curX, player->getPositionY(), estFrames, "");
             }
-        } else {
-            if (f.isHolding[pIdx]) {
-                f.isHolding[pIdx] = false;
-                if (f.cfg.detectSwifts) {
-                    double holdSec = now - f.lastPressTime[pIdx];
-                    if (holdSec > 0.0 && (holdSec * 1000.0) <= 33.33) {
-                        double swiftFrames = std::max(0.10, holdSec * refFps);
-                        fwc::ClickKind kind = (swiftFrames < 1.0) ? fwc::ClickKind::SFrame : fwc::ClickKind::Swift;
 
-                        if (f.cfg.captureToManual && player) {
-                            fwc::MarkerStore::get().addMarker(player->getPositionX(), now, swiftFrames, kind);
-                        }
-                        if (f.cfg.mode == fwc::CounterMode::Auto) {
-                            triggerFeedback(player, swiftFrames, kind);
-                        }
-                    }
-                }
+            if (f.cfg.mode == fwc::CounterMode::Auto) {
+                triggerFeedback(player, estFrames, "");
             }
         }
     }
@@ -492,16 +527,12 @@ class $modify(FWCPlayLayer, PlayLayer) {
         auto& f = *m_fields.self();
         f.cfg = fwc::ModConfig::load();
         if (f.overlay) {
-            f.overlay->reloadConfig();
+            f.overlay->reloadConfig(m_objectLayer);
         }
     }
 
-    float getCurrentPlayerXSafe() {
-        return m_player1 ? m_player1->getPositionX() : 0.0f;
-    }
-
-    double getCurrentSimTimeSafe() {
-        return m_fields->simTime;
+    CCPoint getCurrentPlayerPosSafe() {
+        return m_player1 ? m_player1->getPosition() : ccp(0.0f, 30.0f);
     }
 
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
@@ -510,22 +541,29 @@ class $modify(FWCPlayLayer, PlayLayer) {
         auto& f = *m_fields.self();
         f.cfg = fwc::ModConfig::load();
         f.simTime = 0.0;
+        f.objectsIndexed = false;
         f.prevPlayerX = m_player1 ? m_player1->getPositionX() : 0.0f;
 
-        // Ensure custom sounds directory exists on startup
         (void)fwc::AudioManager::get().getCustomSoundsDir();
-
         fwc::MarkerStore::get().loadForLevel(level);
-        indexLevelObjects();
 
-        std::string levelName = level ? std::string(level->m_levelName) : "Unknown Level";
-        // Attach circles directly inside m_objectLayer so they ALWAYS show up right on the player!
+        std::string levelName = level ? std::string(level->m_levelName) : "LEVEL";
         f.overlay = fwc::HudOverlay::create(levelName, m_objectLayer);
         if (f.overlay) {
             this->addChild(f.overlay, 100);
         }
-
         return true;
+    }
+
+    // THIS is where GD 2.2 actually finishes populating m_objects!
+    void setupHasCompleted() {
+        PlayLayer::setupHasCompleted();
+        auto& f = *m_fields.self();
+        f.objectsIndexed = false;
+        ensureObjectsIndexed();
+        if (f.overlay) {
+            f.overlay->ensureWorldContainer(m_objectLayer);
+        }
     }
 
     void resetLevel() {
@@ -535,14 +573,19 @@ class $modify(FWCPlayLayer, PlayLayer) {
         f.cfg = fwc::ModConfig::load();
         f.simTime = 0.0;
         f.prevPlayerX = m_player1 ? m_player1->getPositionX() : 0.0f;
-        f.lastPressTime[0] = f.lastPressTime[1] = -10.0;
-        f.lastClickEventTime[0] = f.lastClickEventTime[1] = -10.0;
-        f.isHolding[0] = f.isHolding[1] = false;
+        f.recentClicks.clear();
+        for (int i = 0; i < 2; ++i) {
+            for (int j = 0; j < 2; ++j) {
+                f.lastDedupTime[i][j] = -1.0;
+                f.lastDedupX[i][j] = -9999.0f;
+            }
+        }
 
+        ensureObjectsIndexed();
         fwc::MarkerStore::get().resetTriggers();
 
         if (f.overlay) {
-            f.overlay->resetAttempt();
+            f.overlay->resetAttempt(m_objectLayer);
         }
     }
 
@@ -552,20 +595,19 @@ class $modify(FWCPlayLayer, PlayLayer) {
         auto& f = *m_fields.self();
         if (!f.cfg.enabled || dt <= 0.0f) return;
 
-        if (f.cfg.autoTpsAdapt) {
-            double instTps = 1.0 / static_cast<double>(dt);
-            if (instTps >= 20.0 && instTps <= 100000.0) {
-                f.smoothTps = f.smoothTps * 0.90 + instTps * 0.10;
-            }
-            if (f.overlay) {
-                f.overlay->setLiveTps(f.smoothTps);
-            }
+        if (!f.objectsIndexed) {
+            ensureObjectsIndexed();
         }
 
+        double instTps = 1.0 / static_cast<double>(dt);
+        if (instTps >= 20.0 && instTps <= 100000.0) {
+            f.smoothTps = f.smoothTps * 0.90 + instTps * 0.10;
+        }
+
+        float curX = 0.0f;
         if (m_player1 && !m_player1->m_isDead) {
             f.simTime += static_cast<double>(dt);
-
-            float curX = m_player1->getPositionX();
+            curX = m_player1->getPositionX();
             float dx = curX - f.prevPlayerX;
             if (dx > 0.01f && dt > 1e-6f) {
                 float instSpeed = dx / dt;
@@ -580,24 +622,29 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 for (auto& mk : markers) {
                     if (!mk.triggered && curX >= mk.x) {
                         mk.triggered = true;
-                        triggerFeedback(m_player1, mk.frames, mk.kind);
+                        triggerFeedback(m_player1, mk.frames, mk.comment);
                     }
                 }
             }
         }
 
         if (f.overlay) {
-            f.overlay->stepSimulation(dt);
+            f.overlay->ensureWorldContainer(m_objectLayer);
+            f.overlay->stepSimulation(dt, curX);
         }
     }
 };
 
+// Hook 1: Standard input & bots that use handleButton
 class $modify(FWCGJBaseGameLayer, GJBaseGameLayer) {
     void handleButton(bool down, int button, bool isPlayer1) {
         GJBaseGameLayer::handleButton(down, button, isPlayer1);
 
+        if (button != 1) return;
         if (auto* pl = typeinfo_cast<PlayLayer*>(this)) {
-            static_cast<FWCPlayLayer*>(pl)->onInputEvent(down, button, isPlayer1);
+            auto* fwcPl = static_cast<FWCPlayLayer*>(pl);
+            PlayerObject* p = isPlayer1 ? pl->m_player1 : pl->m_player2;
+            fwcPl->onPlayerClick(p, down, isPlayer1);
         }
     }
 };
@@ -605,12 +652,9 @@ class $modify(FWCGJBaseGameLayer, GJBaseGameLayer) {
 class $modify(FWCPauseLayer, PauseLayer) {
     void onOpenFrameCounter(CCObject*) {
         auto* pl = PlayLayer::get();
-        float px = 0.0f;
-        double simT = 0.0;
+        CCPoint pos = ccp(0.0f, 30.0f);
         if (pl) {
-            auto* fwcPl = static_cast<FWCPlayLayer*>(pl);
-            px = fwcPl->getCurrentPlayerXSafe();
-            simT = fwcPl->getCurrentSimTimeSafe();
+            pos = static_cast<FWCPlayLayer*>(pl)->getCurrentPlayerPosSafe();
         }
 
         auto* popup = fwc::SettingsPopup::create(
@@ -619,16 +663,13 @@ class $modify(FWCPauseLayer, PauseLayer) {
                     static_cast<FWCPlayLayer*>(activePl)->reloadFromSettings();
                 }
             },
-            px,
-            simT
+            pos.x,
+            pos.y
         );
-        if (popup) {
-            popup->show();
-        }
+        if (popup) popup->show();
     }
 
     CCNode* makeSquarePauseIcon() {
-        // Proper native GD square button (34x34) with crisp bundled icon
         auto* sq = CCScale9Sprite::create("GJ_button_05.png");
         sq->setContentSize({ 34.0f, 34.0f });
 
@@ -650,7 +691,6 @@ class $modify(FWCPauseLayer, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
 
-        // Queue one frame so geode.node-ids and all other mods finish setting up left-button-menu / right-button-menu
         Ref<PauseLayer> selfRef = this;
         Loader::get()->queueInMainThread([selfRef]() {
             auto* self = static_cast<FWCPauseLayer*>(selfRef.data());
@@ -663,7 +703,6 @@ class $modify(FWCPauseLayer, PauseLayer) {
             );
             btn->setID("fwc-settings-button"_spr);
 
-            // Attach cleanly into Geode's standard mod side menu (auto-stacks next to other mods!)
             if (auto* leftMenu = self->getChildByID("left-button-menu")) {
                 leftMenu->addChild(btn);
                 leftMenu->updateLayout();
@@ -675,7 +714,6 @@ class $modify(FWCPauseLayer, PauseLayer) {
                 return;
             }
 
-            // Fallback if Node IDs isn't installed: neat square button on the left edge
             auto winSize = CCDirector::sharedDirector()->getWinSize();
             auto* menu = CCMenu::create();
             menu->setPosition({ 0.0f, 0.0f });

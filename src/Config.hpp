@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace fwc {
 
@@ -15,62 +16,51 @@ enum class CounterMode : int {
     Manual = 1
 };
 
-enum class ClickKind : int {
-    Normal = 0,
-    SFrame = 1,
-    Swift = 2,
-    Multiclick = 3,
-    Release = 4
+enum class BannerMode : int {
+    Off = 0,
+    FirstOnly = 1,
+    Always = 2
 };
 
-inline std::string clickKindShort(ClickKind kind) {
-    switch (kind) {
-        case ClickKind::SFrame:     return "S-FR";
-        case ClickKind::Swift:      return "SWIFT";
-        case ClickKind::Multiclick: return "MULTI";
-        case ClickKind::Release:    return "REL";
-        default:                    return "";
-    }
-}
+enum class TableStyle : int {
+    CbfRanges = 0, // 10+, 8-10, 6-8, 5-6, 4-5, 3-4, 2-3, 1-2, 0-1
+    Discrete = 1   // 9-12, 7-8, 5-6, 4, 3, 2, 1
+};
 
-inline std::string clickKindFull(ClickKind kind) {
-    switch (kind) {
-        case ClickKind::SFrame:     return "S-Frame";
-        case ClickKind::Swift:      return "Swift";
-        case ClickKind::Multiclick: return "Multiclick";
-        case ClickKind::Release:    return "Release";
-        default:                    return "Normal";
-    }
-}
-
-struct TierStyle {
-    std::string tag;
-    std::string rangeMs;
-    ccColor3B color3;
+struct TierDef {
+    std::string label;     // e.g. "1-2:" or "2:"
+    std::string introDesc; // e.g. "1-2 FRAMES (<240Hz FP)"
+    std::string introMs;   // e.g. "(4.2-8.3ms)"
+    double minF;           // inclusive lower bound in Ref-FPS frames
+    double maxF;           // exclusive upper bound (large number for top bucket)
+    ccColor3B color;
     float pitchOffset;
-    bool isFramePerfect;
 };
 
 struct ModConfig {
     bool enabled = true;
     CounterMode mode = CounterMode::Auto;
     int64_t refFps = 240;
-    bool autoTpsAdapt = true;
+    bool cbfMode = true;
+    TableStyle tableStyle = TableStyle::CbfRanges;
 
     bool showCircles = true;
+    bool persistentCircles = true;
     float circleScale = 1.0f;
     bool showCircleLabel = true;
 
-    bool showHud = true;
-    bool showPercentages = true;
-    bool showSpecialStats = false;
-    bool detectSwifts = false;
-    bool detectMulticlicks = false;
+    bool showTierTable = true;
+    bool showMsHz = true;
+    bool showBottomStats = true;
+    bool showWatermark = true;
+    std::string watermarkText = "FWC COUNTER";
 
-    bool showBanner = true;
-    float bannerDuration = 3.5f;
+    bool showAutoComments = true;
+    float commentFadeSec = 2.2f;
+
+    BannerMode bannerMode = BannerMode::FirstOnly;
+    float bannerDuration = 2.8f;
     std::string bannerComment = "";
-    bool showRawPrecision = true;
     std::string rawPrecisionText = "";
 
     bool soundEnabled = true;
@@ -86,25 +76,33 @@ struct ModConfig {
         auto* mod = Mod::get();
         ModConfig cfg;
         cfg.enabled = mod->getSettingValue<bool>("enabled");
-        auto modeStr = mod->getSettingValue<std::string>("mode");
-        cfg.mode = (modeStr == "manual") ? CounterMode::Manual : CounterMode::Auto;
+        cfg.mode = (mod->getSettingValue<std::string>("mode") == "manual") ? CounterMode::Manual : CounterMode::Auto;
         cfg.refFps = std::clamp<int64_t>(mod->getSettingValue<int64_t>("ref-fps"), 30, 100000);
-        cfg.autoTpsAdapt = mod->getSettingValue<bool>("auto-tps-adapt");
+        cfg.cbfMode = mod->getSettingValue<bool>("cbf-mode");
+        cfg.tableStyle = (mod->getSettingValue<std::string>("table-style") == "discrete")
+            ? TableStyle::Discrete : TableStyle::CbfRanges;
 
         cfg.showCircles = mod->getSettingValue<bool>("show-circles");
+        cfg.persistentCircles = mod->getSettingValue<bool>("persistent-circles");
         cfg.circleScale = static_cast<float>(mod->getSettingValue<double>("circle-scale"));
         cfg.showCircleLabel = mod->getSettingValue<bool>("show-circle-label");
 
-        cfg.showHud = mod->getSettingValue<bool>("show-hud");
-        cfg.showPercentages = mod->getSettingValue<bool>("show-percentages");
-        cfg.showSpecialStats = mod->getSettingValue<bool>("show-special-stats");
-        cfg.detectSwifts = mod->getSettingValue<bool>("detect-swifts");
-        cfg.detectMulticlicks = mod->getSettingValue<bool>("detect-multiclicks");
+        cfg.showTierTable = mod->getSettingValue<bool>("show-tier-table");
+        cfg.showMsHz = mod->getSettingValue<bool>("show-ms-hz");
+        cfg.showBottomStats = mod->getSettingValue<bool>("show-bottom-stats");
+        cfg.showWatermark = mod->getSettingValue<bool>("show-watermark");
+        cfg.watermarkText = mod->getSettingValue<std::string>("watermark-text");
 
-        cfg.showBanner = mod->getSettingValue<bool>("show-banner");
+        cfg.showAutoComments = mod->getSettingValue<bool>("show-auto-comments");
+        cfg.commentFadeSec = static_cast<float>(mod->getSettingValue<double>("comment-fade-sec"));
+
+        auto bm = mod->getSettingValue<std::string>("banner-mode");
+        if (bm == "off") cfg.bannerMode = BannerMode::Off;
+        else if (bm == "always") cfg.bannerMode = BannerMode::Always;
+        else cfg.bannerMode = BannerMode::FirstOnly;
+
         cfg.bannerDuration = static_cast<float>(mod->getSettingValue<double>("banner-duration"));
         cfg.bannerComment = mod->getSettingValue<std::string>("banner-comment");
-        cfg.showRawPrecision = mod->getSettingValue<bool>("show-raw-precision");
         cfg.rawPrecisionText = mod->getSettingValue<std::string>("raw-precision-text");
 
         cfg.soundEnabled = mod->getSettingValue<bool>("sound-enabled");
@@ -123,22 +121,30 @@ struct ModConfig {
         mod->setSettingValue<bool>("enabled", enabled);
         mod->setSettingValue<std::string>("mode", mode == CounterMode::Manual ? "manual" : "auto");
         mod->setSettingValue<int64_t>("ref-fps", std::clamp<int64_t>(refFps, 30, 100000));
-        mod->setSettingValue<bool>("auto-tps-adapt", autoTpsAdapt);
+        mod->setSettingValue<bool>("cbf-mode", cbfMode);
+        mod->setSettingValue<std::string>("table-style", tableStyle == TableStyle::Discrete ? "discrete" : "cbf");
 
         mod->setSettingValue<bool>("show-circles", showCircles);
+        mod->setSettingValue<bool>("persistent-circles", persistentCircles);
         mod->setSettingValue<double>("circle-scale", std::clamp(static_cast<double>(circleScale), 0.4, 2.5));
         mod->setSettingValue<bool>("show-circle-label", showCircleLabel);
 
-        mod->setSettingValue<bool>("show-hud", showHud);
-        mod->setSettingValue<bool>("show-percentages", showPercentages);
-        mod->setSettingValue<bool>("show-special-stats", showSpecialStats);
-        mod->setSettingValue<bool>("detect-swifts", detectSwifts);
-        mod->setSettingValue<bool>("detect-multiclicks", detectMulticlicks);
+        mod->setSettingValue<bool>("show-tier-table", showTierTable);
+        mod->setSettingValue<bool>("show-ms-hz", showMsHz);
+        mod->setSettingValue<bool>("show-bottom-stats", showBottomStats);
+        mod->setSettingValue<bool>("show-watermark", showWatermark);
+        mod->setSettingValue<std::string>("watermark-text", watermarkText);
 
-        mod->setSettingValue<bool>("show-banner", showBanner);
-        mod->setSettingValue<double>("banner-duration", std::clamp(static_cast<double>(bannerDuration), 1.0, 10.0));
+        mod->setSettingValue<bool>("show-auto-comments", showAutoComments);
+        mod->setSettingValue<double>("comment-fade-sec", std::clamp(static_cast<double>(commentFadeSec), 0.5, 8.0));
+
+        std::string bm = "first";
+        if (bannerMode == BannerMode::Off) bm = "off";
+        else if (bannerMode == BannerMode::Always) bm = "always";
+        mod->setSettingValue<std::string>("banner-mode", bm);
+
+        mod->setSettingValue<double>("banner-duration", std::clamp(static_cast<double>(bannerDuration), 0.8, 8.0));
         mod->setSettingValue<std::string>("banner-comment", bannerComment);
-        mod->setSettingValue<bool>("show-raw-precision", showRawPrecision);
         mod->setSettingValue<std::string>("raw-precision-text", rawPrecisionText);
 
         mod->setSettingValue<bool>("sound-enabled", soundEnabled);
@@ -152,37 +158,101 @@ struct ModConfig {
     }
 };
 
-// Smooth pitch & color tiers mapped to real window duration in milliseconds
-inline TierStyle evaluateTier(double frames, double refFps) {
-    double safeFps = std::max(1.0, refFps);
-    double ms = (frames / safeFps) * 1000.0;
+// Exact NaN Counter color palette (top = easiest, bottom = tightest)
+inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
+    double fps = std::max(30.0, refFps);
+    double scale = fps / 240.0; // Scales buckets cleanly if user sets 60, 240, 360, 2400, 6000!
 
-    if (frames < 1.0 || ms < 0.8) {
-        return { "SUB-FRAME", "< 0.80 ms", ccc3(225, 110, 255), 0.36f, true };
+    auto msRangeStr = [&](double loF, double hiF) -> std::string {
+        double loMs = (loF / fps) * 1000.0;
+        double hiMs = (hiF / fps) * 1000.0;
+        if (hiF > 1e6) return fmt::format("(>{:.1f}ms)", loMs);
+        return fmt::format("({:.1f}-{:.1f}ms)", loMs, hiMs);
+    };
+    auto hzDescStr = [&](double loF, double hiF) -> std::string {
+        if (hiF > 1e6) return "";
+        double hz = fps / std::max(0.1, hiF);
+        if (loF <= 0.001) return fmt::format("(>{:.0f}Hz FP)", hz);
+        return fmt::format("(<{:.0f}Hz FP)", hz);
+    };
+    auto fmtNum = [](double v) -> std::string {
+        if (std::fabs(v - std::round(v)) < 0.05) return fmt::format("{:.0f}", std::round(v));
+        return fmt::format("{:.1f}", v);
+    };
+
+    std::vector<TierDef> tiers;
+    if (style == TableStyle::CbfRanges) {
+        struct RawBucket { double lo; double hi; ccColor3B col; float pitch; };
+        const RawBucket raw[9] = {
+            { 10.0, 1e9,  ccc3(198, 154, 255), -0.14f }, // 10+: Lavender purple
+            {  8.0, 10.0, ccc3(112, 165, 255), -0.09f }, // 8-10: Royal blue
+            {  6.0,  8.0, ccc3( 96, 226, 255), -0.04f }, // 6-8: Sky cyan
+            {  5.0,  6.0, ccc3( 92, 242, 206),  0.00f }, // 5-6: Aqua mint
+            {  4.0,  5.0, ccc3(118, 244, 132),  0.05f }, // 4-5: Vivid green
+            {  3.0,  4.0, ccc3(236, 246, 104),  0.10f }, // 3-4: Yellow-green / yellow
+            {  2.0,  3.0, ccc3(255, 198,  72),  0.16f }, // 2-3: Warm gold / orange
+            {  1.0,  2.0, ccc3(255, 118,  92),  0.23f }, // 1-2: Coral red
+            {  0.0,  1.0, ccc3(255,  86, 138),  0.32f }  // 0-1: Crimson pink
+        };
+        for (auto const& b : raw) {
+            double lo = b.lo * scale;
+            double hi = (b.hi > 1e6) ? 1e9 : (b.hi * scale);
+            std::string lbl = (b.hi > 1e6)
+                ? fmt::format("{}+:", fmtNum(lo))
+                : fmt::format("{}-{}:", fmtNum(lo), fmtNum(hi));
+            std::string desc = (b.hi > 1e6)
+                ? fmt::format("{}+ FRAMES", fmtNum(lo))
+                : fmt::format("{}-{} FRAMES {}", fmtNum(lo), fmtNum(hi), hzDescStr(lo, hi));
+            tiers.push_back({ lbl, desc, msRangeStr(lo, hi), lo, hi, b.col, b.pitch });
+        }
+    } else {
+        // Discrete style (like LIGHTmArE screenshot: 9-12, 7-8, 5-6, 4, 3, 2, 1)
+        struct RawDisc { double lo; double hi; const char* lbl; ccColor3B col; float pitch; };
+        const RawDisc raw[7] = {
+            { 8.5, 1e9,  "9-12:", ccc3(122, 160, 255), -0.10f },
+            { 6.5, 8.5,  "7-8:",  ccc3( 96, 220, 255), -0.04f },
+            { 4.5, 6.5,  "5-6:",  ccc3(106, 240, 150),  0.02f },
+            { 3.5, 4.5,  "4:",    ccc3(222, 246, 112),  0.08f },
+            { 2.5, 3.5,  "3:",    ccc3(255, 224,  88),  0.14f },
+            { 1.5, 2.5,  "2:",    ccc3(255, 156,  84),  0.22f },
+            { 0.0, 1.5,  "1:",    ccc3(255,  92, 112),  0.32f }
+        };
+        for (auto const& b : raw) {
+            double lo = b.lo * scale;
+            double hi = (b.hi > 1e6) ? 1e9 : (b.hi * scale);
+            std::string lbl = (std::fabs(scale - 1.0) < 0.05)
+                ? std::string(b.lbl)
+                : ((b.hi > 1e6) ? fmt::format("{}+:", fmtNum(lo)) : fmt::format("{}-{}:", fmtNum(lo), fmtNum(hi)));
+            std::string desc = fmt::format("{} FRAMES {}", lbl.substr(0, lbl.size() - 1), hzDescStr(lo, hi));
+            tiers.push_back({ lbl, desc, msRangeStr(lo, hi), lo, hi, b.col, b.pitch });
+        }
     }
-    if (ms <= 4.35) {
-        return { "240Hz+ FP", "<= 4.17 ms", ccc3(255, 78, 92), 0.24f, true };
-    }
-    if (ms <= 8.50) {
-        return { "120Hz+ FP", "4.17 - 8.33 ms", ccc3(255, 160, 64), 0.14f, true };
-    }
-    if (ms <= 12.65) {
-        return { "~80Hz FP", "8.33 - 12.50 ms", ccc3(255, 224, 66), 0.06f, true };
-    }
-    if (ms <= 16.90) {
-        return { "60Hz FP", "12.50 - 16.67 ms", ccc3(96, 232, 136), 0.0f, true };
-    }
-    return { "OPEN", "> 16.67 ms", ccc3(120, 208, 255), -0.07f, false };
+    return tiers;
 }
 
-inline std::string formatFrames(double frames) {
-    if (frames < 1.0) {
-        return fmt::format("{:.2f}F", frames);
+inline int findTierIndex(std::vector<TierDef> const& tiers, double frames) {
+    // Check from tightest (bottom) up to widest (top)
+    for (int i = static_cast<int>(tiers.size()) - 1; i >= 0; --i) {
+        if (frames < tiers[static_cast<size_t>(i)].maxF) {
+            return i;
+        }
     }
-    if (frames < 10.0 && std::fabs(frames - std::round(frames)) > 0.05) {
-        return fmt::format("{:.1f}F", frames);
+    return 0;
+}
+
+// Format circle number WITHOUT the letter 'F' (exact NaN Counter style!)
+inline std::string formatCircleNumber(double frames, bool cbfMode) {
+    if (!cbfMode) {
+        int rounded = std::max(1, static_cast<int>(std::round(frames)));
+        return fmt::format("{}", rounded);
     }
-    return fmt::format("{:.0f}F", std::round(frames));
+    if (frames < 2.0) {
+        return fmt::format("{:.2f}", frames); // e.g. 0.77, 1.45, 1.99
+    }
+    if (frames < 10.0) {
+        return fmt::format("{:.1f}", frames); // e.g. 3.0, 4.8, 7.1
+    }
+    return fmt::format("{:.0f}", std::round(frames));
 }
 
 inline double framesToMs(double frames, double refFps) {
