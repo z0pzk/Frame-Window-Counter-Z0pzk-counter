@@ -1,4 +1,4 @@
-# Frame Window Counter v3.0 — NaN Counter Edition (GD 2.2081 / Geode v5.11.2)
+# Frame Window Counter v3.0 (GD 2.2081 / Geode v5.11.2)
 
 Полный ремейк в стиле **NaN Counter** (CBF / Frame Window Counter):
 - **Починен баг «всегда 4 кадра»**: объекты уровня теперь индексируются в `PlayLayer::setupHasCompleted()` (в v2 `m_objects` в `init` был пуст), а Auto-симулятор прогоняет реальную траекторию выживания и бинарно находит границы окна с точностью до долей кадра (`0.77`, `1.45`, `5.3`).
