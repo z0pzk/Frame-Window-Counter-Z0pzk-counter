@@ -29,7 +29,6 @@ private:
     std::string m_levelName;
     std::vector<TierDef> m_tiers;
 
-    // World container inside PlayLayer::m_objectLayer (cleared in onExit)
     Ref<CCNode> m_worldContainer;
     std::vector<WorldCircle> m_circles;
 
@@ -45,6 +44,9 @@ private:
     CCLabelBMFont* m_lblCallout = nullptr;
     float m_calloutAge = 999.0f;
     float m_calloutTotal = 2.2f;
+
+    CCNode* m_scanBanner = nullptr;
+    CCLabelBMFont* m_scanStatusLbl = nullptr;
 
     CCNode* m_introRoot = nullptr;
     CCLayerColor* m_introBg = nullptr;
@@ -72,6 +74,36 @@ private:
     CCSprite* makeGlowSprite() {
         auto path = (Mod::get()->getResourcesDir() / "fwc_glow.png").string();
         return CCSprite::create(path.c_str());
+    }
+
+    void buildScanBanner() {
+        if (m_scanBanner) {
+            m_scanBanner->removeFromParent();
+            m_scanBanner = nullptr;
+            m_scanStatusLbl = nullptr;
+        }
+        auto winSize = CCDirector::sharedDirector()->getWinSize();
+        m_scanBanner = CCNode::create();
+        m_scanBanner->setPosition({ winSize.width * 0.5f, winSize.height - 46.0f });
+        m_scanBanner->setVisible(false);
+        this->addChild(m_scanBanner, 50);
+
+        auto* bg = CCScale9Sprite::create("square02_001.png");
+        bg->setOpacity(185);
+        bg->setContentSize({ 290.0f, 34.0f });
+        m_scanBanner->addChild(bg, 0);
+
+        m_scanStatusLbl = CCLabelBMFont::create("SCANNING...", "bigFont.fnt");
+        m_scanStatusLbl->setScale(0.36f);
+        m_scanStatusLbl->setColor(ccc3(120, 245, 165));
+        m_scanStatusLbl->setPosition({ 0.0f, 5.0f });
+        m_scanBanner->addChild(m_scanStatusLbl, 2);
+
+        auto* hint = CCLabelBMFont::create("Exact GD Engine Probing  |  Press ESC to cancel", "chatFont.fnt");
+        hint->setScale(0.54f);
+        hint->setColor(ccc3(210, 218, 232));
+        hint->setPosition({ 0.0f, -8.5f });
+        m_scanBanner->addChild(hint, 2);
     }
 
     void buildLeftHud(bool preserveCounts) {
@@ -298,13 +330,17 @@ public:
 
         ensureWorldContainer(worldParent);
         buildLeftHud(false);
+        buildScanBanner();
         buildIntroScreen(false);
         return true;
     }
 
     void onExit() override {
-        m_circles.clear();
-        m_worldContainer = nullptr;
+        clearCircles();
+        if (m_worldContainer) {
+            m_worldContainer->removeFromParent();
+            m_worldContainer = nullptr;
+        }
         CCLayer::onExit();
     }
 
@@ -312,10 +348,25 @@ public:
         if (!worldParent) return;
         if (m_worldContainer && m_worldContainer->getParent() == worldParent) return;
 
+        if (m_worldContainer) {
+            m_worldContainer->removeAllChildrenWithCleanup(true);
+            m_worldContainer->removeFromParent();
+            m_worldContainer = nullptr;
+        }
         m_circles.clear();
+
         auto* node = CCNode::create();
+        node->setID("fwc-world-circles"_spr);
         worldParent->addChild(node, 2000);
         m_worldContainer = node;
+    }
+
+    void setScanStatus(bool active, std::string const& text) {
+        if (!m_scanBanner) return;
+        m_scanBanner->setVisible(active);
+        if (active && m_scanStatusLbl) {
+            m_scanStatusLbl->setString(text.c_str());
+        }
     }
 
     void reloadConfig(CCNode* worldParent) {
@@ -350,11 +401,10 @@ public:
     }
 
     void clearCircles() {
-        for (auto& c : m_circles) {
-            if (c.ring) c.ring->removeFromParent();
-            if (c.label) c.label->removeFromParent();
-        }
         m_circles.clear();
+        if (m_worldContainer) {
+            m_worldContainer->removeAllChildrenWithCleanup(true);
+        }
     }
 
     void pruneCirclesAfter(float x) {

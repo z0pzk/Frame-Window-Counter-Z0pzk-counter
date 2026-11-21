@@ -8,9 +8,9 @@
     },
     "id": "z0pzk.frame-window-counter",
     "name": "Frame Window Counter",
-    "version": "v5.0.0",
+    "version": "v6.0.0",
     "developer": "z0pzk",
-    "description": "Frame & CBF Window Counter with danger-filtered Auto physics analyzer, per-tier independent custom sounds/pitch/volume, Manual markers & comments, bold static click circles, and full bot compatibility.",
+    "description": "Frame & CBF Window Counter with Real-Engine Pathfinder Scanner (exact GD physics probing), upgraded Live Auto solver (slopes/wave/spider/cube), Manual markers & comments, per-tier independent custom sounds, bold static circles, and full bot support.",
     "resources": {
         "files": [
             "resources/*.wav",
@@ -42,11 +42,6 @@
         "cbf-mode": {
             "type": "bool",
             "name": "CBF Decimals",
-            "default": true
-        },
-        "ignore-safe-clicks": {
-            "type": "bool",
-            "name": "Ignore Safe Clicks",
             "default": true
         },
         "table-style": {

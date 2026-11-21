@@ -12,10 +12,10 @@ namespace fwc {
 
 struct TierSoundOverride {
     bool enabled = false;
-    std::string preset = "classic"; // classic / fb / chime / tick / custom
+    std::string preset = "classic";
     std::string customFile = "";
-    float volume = 0.85f;           // 0.0 .. 1.5 (completely independent of global volume!)
-    float pitch = 1.0f;             // 0.4 .. 2.5 (completely independent of global pitch & auto pitch!)
+    float volume = 0.85f;
+    float pitch = 1.0f;
 };
 
 class TierSoundStore {

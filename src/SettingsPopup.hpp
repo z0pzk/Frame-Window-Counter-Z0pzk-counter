@@ -19,12 +19,14 @@ class SettingsPopup : public FLAlertLayer {
 private:
     ModConfig m_cfg;
     std::function<void()> m_onChanged;
+    std::function<void()> m_onStartExactScan;
+    size_t m_recordedRunClicks = 0;
     float m_currentPlayerX = 0.0f;
     float m_currentPlayerY = 30.0f;
 
-    int m_activeTab = 0;       // 0=General, 1=HUD, 2=Audio, 3=Manual
-    int m_audioSubTab = 0;     // 0=Default (All), 1=Per-Tier Overrides
-    int m_selectedTierIdx = 0; // index into buildTiers() (defaults to tightest tier like 0-1 or 1!)
+    int m_activeTab = 0;
+    int m_audioSubTab = 0;
+    int m_selectedTierIdx = 0;
     bool m_tierIdxInited = false;
     int m_manualPage = 0;
     std::string m_draftMarkerComment;
@@ -53,7 +55,6 @@ private:
     TierDef activeTierDef() {
         auto tiers = currentTiers();
         if (!m_tierIdxInited && !tiers.empty()) {
-            // Default to the tightest tier (e.g. "0-1" or "1") because that's what people override first!
             m_selectedTierIdx = static_cast<int>(tiers.size()) - 1;
             m_tierIdxInited = true;
         }
@@ -194,7 +195,16 @@ private:
         if (m_activeTab == 0) {
             // GENERAL TAB
             addCheckboxRow(m_contentNode, menu, "Enable Mod", m_cfg.enabled, 100, leftX, topY);
-            addCheckboxRow(m_contentNode, menu, "Ignore Safe", m_cfg.ignoreSafeClicks, 105, rightX, topY);
+
+            std::string scanTxt = m_recordedRunClicks > 0
+                ? fmt::format("Scan Exact ({})", m_recordedRunClicks)
+                : "Scan Exact (0)";
+            auto* scanBtn = CCMenuItemSpriteExtra::create(
+                makeMiniBtn(scanTxt.c_str(), 150.0f, 22.0f, m_recordedRunClicks > 0 ? "GJ_button_01.png" : "GJ_button_04.png"),
+                this, menu_selector(SettingsPopup::onStartScanBtn)
+            );
+            scanBtn->setPosition({ rightX + colW - 75.0f, topY });
+            menu->addChild(scanBtn);
 
             addLabel(m_contentNode, "Mode:", leftX, topY - 30.0f, 0.34f, "goldFont.fnt");
             bool isAuto = (m_cfg.mode == CounterMode::Auto);
@@ -275,7 +285,7 @@ private:
             addStepperRow(m_contentNode, menu, "Circle Size", fmt::format("{:.1f}x", m_cfg.circleScale), 200, 201, leftX, topY - 156.0f, colW);
 
             auto* tip = CCLabelBMFont::create(
-                "Ignore Safe skips harmless spam & open clicks. Works with Silicate, xdBot, CBF & Frame Advance.",
+                "Play or run Silicate once, then press Scan Exact for 100% real GD physics frame windows!",
                 "chatFont.fnt"
             );
             tip->setScale(0.52f);
@@ -339,7 +349,7 @@ private:
             m_contentNode->addChild(precInput, 8);
         }
         else if (m_activeTab == 2) {
-            // AUDIO TAB (Sub-tabs: Default (All) vs Per-Tier Independent Overrides!)
+            // AUDIO TAB (Default vs Per-Frame Independent Overrides)
             auto tiers = currentTiers();
             int ovCount = TierSoundStore::get().countActiveOverrides(tiers);
 
@@ -351,9 +361,7 @@ private:
             defBtn->setPosition({ leftX + 64.0f, topY + 2.0f });
             menu->addChild(defBtn);
 
-            std::string ovBtnLabel = ovCount > 0
-                ? fmt::format("Per-Frame ({})", ovCount)
-                : "Per-Frame (0)";
+            std::string ovBtnLabel = fmt::format("Per-Frame ({})", ovCount);
             auto* ovBtn = CCMenuItemSpriteExtra::create(
                 makeMiniBtn(ovBtnLabel.c_str(), 126.0f, 22.0f, m_audioSubTab == 1 ? "GJ_button_01.png" : "GJ_button_04.png"),
                 this, menu_selector(SettingsPopup::onAudioSubTabBtn)
@@ -368,7 +376,6 @@ private:
             const char* pLabels[5] = { "Classic", "FB Bell", "Chime", "Tick", "Custom" };
 
             if (m_audioSubTab == 0) {
-                // DEFAULT SOUND FOR ALL NON-OVERRIDDEN TIERS
                 addStepperRow(m_contentNode, menu, "Base Pitch", fmt::format("{:.2f}x", m_cfg.soundPitch), 220, 221, leftX, topY - 30.0f, colW);
                 addStepperRow(m_contentNode, menu, "Volume", fmt::format("{:.0f}%", m_cfg.soundVolume * 100.0f), 222, 223, rightX, topY - 30.0f, colW);
 
@@ -426,11 +433,9 @@ private:
                 tip->setPosition({ kPanelW * 0.5f, 24.0f });
                 m_contentNode->addChild(tip, 3);
             } else {
-                // PER-FRAME INDEPENDENT OVERRIDES (pick any 1 or multiple tiers!)
                 TierDef td = activeTierDef();
                 TierSoundOverride ov = TierSoundStore::get().getForTier(td.key);
 
-                // Tier picker row: <  [0-1]  >   +   [x] Override This Tier
                 addLabel(m_contentNode, "Tier:", leftX, topY - 30.0f, 0.34f, "goldFont.fnt");
 
                 auto* lArr = CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png");
@@ -456,7 +461,6 @@ private:
 
                 addCheckboxRow(m_contentNode, menu, "Use Custom Sound", ov.enabled, 125, rightX, topY - 30.0f);
 
-                // Independent Pitch & Independent Volume (zero link to global!)
                 addStepperRow(m_contentNode, menu, "Own Pitch", fmt::format("{:.2f}x", ov.pitch), 230, 231, leftX, topY - 62.0f, colW);
                 addStepperRow(m_contentNode, menu, "Own Volume", fmt::format("{:.0f}%", ov.volume * 100.0f), 232, 233, rightX, topY - 62.0f, colW);
 
@@ -556,11 +560,11 @@ private:
 
             if (markers.empty()) {
                 auto* emptyLbl = CCLabelBMFont::create(
-                    "No manual markers for this level yet.\nEnable 'Capture Clicks' or press '+ Mark Here'.",
+                    "No markers yet. Use 'Scan Exact' in General tab for automatic exact windows,\nor press '+ Mark Here' manually!",
                     "chatFont.fnt"
                 );
                 emptyLbl->setAlignment(kCCTextAlignmentCenter);
-                emptyLbl->setScale(0.60f);
+                emptyLbl->setScale(0.58f);
                 emptyLbl->setColor(ccc3(205, 212, 224));
                 emptyLbl->setPosition({ kPanelW * 0.5f, topY - 96.0f });
                 m_contentNode->addChild(emptyLbl, 3);
@@ -635,6 +639,20 @@ private:
     }
 
     // Callbacks
+    void onStartScanBtn(CCObject*) {
+        if (m_recordedRunClicks == 0) {
+            FLAlertLayer::create(
+                "No Clicks Recorded Yet",
+                "Play the level (or run your bot like Silicate) for one attempt first so FWC records your clicks, then press <cg>Scan Exact</c>!",
+                "OK"
+            )->show();
+            return;
+        }
+        auto cb = m_onStartExactScan;
+        this->removeFromParent();
+        if (cb) cb();
+    }
+
     void onTabSelect(CCObject* sender) {
         m_activeTab = static_cast<CCNode*>(sender)->getTag();
         rebuildContent();
@@ -698,7 +716,6 @@ private:
             case 102: m_cfg.showCircles = !m_cfg.showCircles; break;
             case 103: m_cfg.persistentCircles = !m_cfg.persistentCircles; break;
             case 104: m_cfg.showCircleLabel = !m_cfg.showCircleLabel; break;
-            case 105: m_cfg.ignoreSafeClicks = !m_cfg.ignoreSafeClicks; break;
             case 110: m_cfg.showTierTable = !m_cfg.showTierTable; break;
             case 111: m_cfg.showMsHz = !m_cfg.showMsHz; break;
             case 112: m_cfg.showBottomStats = !m_cfg.showBottomStats; break;
@@ -869,7 +886,7 @@ private:
         this->removeFromParent();
     }
 
-    bool setup(std::function<void()> onChanged, float playerX, float playerY) {
+    bool setup(std::function<void()> onChanged, std::function<void()> onStartExactScan, size_t recordedClicks, float playerX, float playerY) {
         if (!FLAlertLayer::init(165)) return false;
 
         if (!m_buttonMenu) {
@@ -880,6 +897,8 @@ private:
 
         m_cfg = ModConfig::load();
         m_onChanged = std::move(onChanged);
+        m_onStartExactScan = std::move(onStartExactScan);
+        m_recordedRunClicks = recordedClicks;
         m_currentPlayerX = playerX;
         m_currentPlayerY = playerY;
 
@@ -907,9 +926,9 @@ private:
     }
 
 public:
-    static SettingsPopup* create(std::function<void()> onChanged, float playerX, float playerY) {
+    static SettingsPopup* create(std::function<void()> onChanged, std::function<void()> onStartExactScan, size_t recordedClicks, float playerX, float playerY) {
         auto* ret = new SettingsPopup();
-        if (ret && ret->setup(std::move(onChanged), playerX, playerY)) {
+        if (ret && ret->setup(std::move(onChanged), std::move(onStartExactScan), recordedClicks, playerX, playerY)) {
             ret->autorelease();
             return ret;
         }

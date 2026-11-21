@@ -23,12 +23,12 @@ enum class BannerMode : int {
 };
 
 enum class TableStyle : int {
-    CbfRanges = 0, // 10+, 8-10, 6-8, 5-6, 4-5, 3-4, 2-3, 1-2, 0-1
-    Discrete = 1   // 9-12, 7-8, 5-6, 4, 3, 2, 1
+    CbfRanges = 0,
+    Discrete = 1
 };
 
 struct TierDef {
-    std::string key;       // Stable key for per-tier sound overrides, e.g. "0-1", "1-2", "1", "2"
+    std::string key;
     std::string label;
     std::string introDesc;
     std::string introMs;
@@ -43,7 +43,6 @@ struct ModConfig {
     CounterMode mode = CounterMode::Auto;
     int64_t refFps = 240;
     bool cbfMode = true;
-    bool ignoreSafeClicks = true;
     TableStyle tableStyle = TableStyle::CbfRanges;
 
     bool showCircles = true;
@@ -81,7 +80,6 @@ struct ModConfig {
         cfg.mode = (mod->getSettingValue<std::string>("mode") == "manual") ? CounterMode::Manual : CounterMode::Auto;
         cfg.refFps = std::clamp<int64_t>(mod->getSettingValue<int64_t>("ref-fps"), 30, 100000);
         cfg.cbfMode = mod->getSettingValue<bool>("cbf-mode");
-        cfg.ignoreSafeClicks = mod->getSettingValue<bool>("ignore-safe-clicks");
         cfg.tableStyle = (mod->getSettingValue<std::string>("table-style") == "discrete")
             ? TableStyle::Discrete : TableStyle::CbfRanges;
 
@@ -125,7 +123,6 @@ struct ModConfig {
         mod->setSettingValue<std::string>("mode", mode == CounterMode::Manual ? "manual" : "auto");
         mod->setSettingValue<int64_t>("ref-fps", std::clamp<int64_t>(refFps, 30, 100000));
         mod->setSettingValue<bool>("cbf-mode", cbfMode);
-        mod->setSettingValue<bool>("ignore-safe-clicks", ignoreSafeClicks);
         mod->setSettingValue<std::string>("table-style", tableStyle == TableStyle::Discrete ? "discrete" : "cbf");
 
         mod->setSettingValue<bool>("show-circles", showCircles);
