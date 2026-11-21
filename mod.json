@@ -8,9 +8,9 @@
     },
     "id": "z0pzk.frame-window-counter",
     "name": "Frame Window Counter",
-    "version": "v4.0.0",
+    "version": "v5.0.0",
     "developer": "z0pzk",
-    "description": "Frame & CBF Window Counter with survival-peak Auto physics analyzer, Manual markers & comments, bold static click circles, glowing tier table, and full bot compatibility (Silicate, xdBot, Eclipse, CBF).",
+    "description": "Frame & CBF Window Counter with danger-filtered Auto physics analyzer, per-tier independent custom sounds/pitch/volume, Manual markers & comments, bold static click circles, and full bot compatibility.",
     "resources": {
         "files": [
             "resources/*.wav",
@@ -42,6 +42,11 @@
         "cbf-mode": {
             "type": "bool",
             "name": "CBF Decimals",
+            "default": true
+        },
+        "ignore-safe-clicks": {
+            "type": "bool",
+            "name": "Ignore Safe Clicks",
             "default": true
         },
         "table-style": {

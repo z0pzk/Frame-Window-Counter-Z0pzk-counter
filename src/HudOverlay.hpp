@@ -42,12 +42,10 @@ private:
     CCLabelBMFont* m_lblScore = nullptr;
     CCLabelBMFont* m_lblWatermark = nullptr;
 
-    // Manual-only comment callout on the right side
     CCLabelBMFont* m_lblCallout = nullptr;
     float m_calloutAge = 999.0f;
     float m_calloutTotal = 2.2f;
 
-    // Intro screen
     CCNode* m_introRoot = nullptr;
     CCLayerColor* m_introBg = nullptr;
     std::vector<CCLabelBMFont*> m_introLabels;
@@ -55,7 +53,6 @@ private:
     bool m_introActive = false;
     bool m_introShownOnce = false;
 
-    // Live state preserved across settings reloads!
     double m_lastMs = 0.0;
     double m_lastHz = 0.0;
     double m_rawPrecision = 0.0;
@@ -179,7 +176,6 @@ private:
             updateBottomNumbers();
         }
 
-        // Top-CENTER watermark (clean & centered!)
         if (m_cfg.showWatermark && !m_cfg.watermarkText.empty()) {
             m_lblWatermark = CCLabelBMFont::create(m_cfg.watermarkText.c_str(), "bigFont.fnt");
             m_lblWatermark->setAnchorPoint({ 0.5f, 0.5f });
@@ -190,7 +186,6 @@ private:
             m_tableRoot->addChild(m_lblWatermark, 2);
         }
 
-        // Right-side manual comment callout
         m_lblCallout = CCLabelBMFont::create("", "bigFont.fnt");
         m_lblCallout->setAnchorPoint({ 1.0f, 0.5f });
         m_lblCallout->setAlignment(kCCTextAlignmentRight);
@@ -362,7 +357,6 @@ public:
         m_circles.clear();
     }
 
-    // Prune circles ahead of player on savestate / checkpoint rewind!
     void pruneCirclesAfter(float x) {
         for (size_t i = 0; i < m_circles.size(); ) {
             if (m_circles[i].x >= x - 2.0f) {
@@ -399,7 +393,6 @@ public:
         int tierIdx = findTierIndex(m_tiers, displayFrames);
         auto const& tier = m_tiers[static_cast<size_t>(tierIdx)];
 
-        // 1) Update Tier Table + Trigger Crisp White Glow Animation ONLY on the table number!
         if (tierIdx >= 0 && tierIdx < static_cast<int>(m_rows.size())) {
             auto& row = m_rows[static_cast<size_t>(tierIdx)];
             row.count++;
@@ -413,11 +406,9 @@ public:
             }
         }
 
-        // 2) Update Reaction ms & Hz
         if (m_lblMs) m_lblMs->setString(fmt::format("{:.2f}ms", m_lastMs).c_str());
         if (m_lblHz) m_lblHz->setString(fmt::format("{:.0f}Hz", std::min(m_lastHz, 9999.0)).c_str());
 
-        // 3) Update Bottom-Left Consistency % & Raw Precision Score
         double z = m_lastMs / (2.0 * 1.41421356 * 8.0);
         double pHit = std::clamp(std::erf(z), 0.03, 0.999);
         m_logPassProb += std::log(pHit);
@@ -426,12 +417,10 @@ public:
         m_rawPrecision += weight;
         updateBottomNumbers();
 
-        // 4) Manual-ONLY comment callout
         if (!manualComment.empty()) {
             showManualCallout(manualComment, tier.color);
         }
 
-        // 5) Spawn STATIC Bold Circle directly in m_objectLayer (NO bounce/scale animation!)
         auto* container = m_worldContainer.data();
         if (!m_cfg.showCircles || !container) return;
 
@@ -454,7 +443,7 @@ public:
             wc.ring->setPosition(levelPos);
             wc.ring->setColor(tier.color);
             wc.ring->setOpacity(255);
-            wc.ring->setScale(diameter / texW); // Instant exact scale — zero animation!
+            wc.ring->setScale(diameter / texW);
             container->addChild(wc.ring, 10);
         }
 
@@ -462,7 +451,7 @@ public:
             std::string numStr = formatCircleNumber(displayFrames, m_cfg.cbfMode);
             wc.label = CCLabelBMFont::create(numStr.c_str(), "bigFont.fnt");
             wc.label->setAnchorPoint({ 1.0f, 0.5f });
-            wc.label->setScale(0.44f * std::min(1.4f, sc)); // Instant exact scale — zero animation!
+            wc.label->setScale(0.44f * std::min(1.4f, sc));
             wc.label->setColor(tier.color);
             wc.label->setOpacity(255);
             wc.label->setPosition(ccp(levelPos.x - 21.0f * sc, levelPos.y));
@@ -475,7 +464,6 @@ public:
     void stepSimulation(float dt, float currentPlayerX) {
         if (!m_cfg.enabled || dt <= 0.0f) return;
 
-        // Animate table white glow highlight
         for (auto& r : m_rows) {
             if (r.glowTimer > 0.0f) {
                 r.glowTimer = std::max(0.0f, r.glowTimer - dt);
@@ -487,7 +475,6 @@ public:
             }
         }
 
-        // Animate manual comment callout
         if (m_lblCallout && m_calloutAge < m_calloutTotal) {
             m_calloutAge += dt;
             if (m_calloutAge >= m_calloutTotal) {
@@ -503,7 +490,6 @@ public:
             }
         }
 
-        // Prune far-behind circles (or fade if Keep Circles is OFF)
         for (size_t i = 0; i < m_circles.size(); ) {
             auto& c = m_circles[i];
             c.age += dt;
@@ -533,7 +519,6 @@ public:
             ++i;
         }
 
-        // Intro screen fade on game dt
         if (m_introActive && m_introRoot) {
             m_introTimer += dt;
             float holdEnd = std::max(0.4f, m_cfg.bannerDuration);

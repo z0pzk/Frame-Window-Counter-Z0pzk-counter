@@ -105,7 +105,7 @@ public:
         std::ofstream out(path, std::ios::trunc);
         if (!out.is_open()) return;
 
-        out << "# FWC v4 Markers: x|y|frames|comment\n";
+        out << "# FWC Markers: x|y|frames|comment\n";
         for (auto const& m : m_markers) {
             out << m.x << "|" << m.y << "|" << m.frames << "|" << sanitizeComment(m.comment) << "\n";
         }

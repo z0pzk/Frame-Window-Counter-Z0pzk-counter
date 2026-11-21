@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Config.hpp"
+#include "TierSoundStore.hpp"
 #include <Geode/Geode.hpp>
 #include <algorithm>
 #include <cctype>
@@ -116,6 +118,21 @@ public:
         }
 
         engine->playEffect(path);
+    }
+
+    // Plays either the tier's independent override (own sound, volume, pitch) or the default sound!
+    void playForTier(ModConfig const& cfg, TierDef const& tier) {
+        if (!cfg.soundEnabled) return;
+
+        auto ov = TierSoundStore::get().getForTier(tier.key);
+        if (ov.enabled) {
+            // Completely independent volume and pitch (no global pitch / auto pitch interference!)
+            playBell(ov.preset, ov.customFile, ov.volume, ov.pitch);
+            return;
+        }
+
+        float pitch = cfg.soundPitch + (cfg.dynamicPitch ? tier.pitchOffset : 0.0f);
+        playBell(cfg.soundPreset, cfg.customSoundFile, cfg.soundVolume, pitch);
     }
 };
 

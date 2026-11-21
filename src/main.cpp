@@ -8,6 +8,8 @@
 #include "HudOverlay.hpp"
 #include "MarkerStore.hpp"
 #include "SettingsPopup.hpp"
+#include "TierSoundStore.hpp"
+#include "WindowSolver.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -17,49 +19,6 @@
 using namespace geode::prelude;
 
 namespace {
-
-enum class ObjKind : uint8_t {
-    Solid = 0,
-    Hazard = 1,
-    YellowOrb = 2,
-    PinkOrb = 3,
-    RedOrb = 4,
-    BlueOrb = 5,
-    GreenOrb = 6,
-    BlackOrb = 7,
-    DashOrb = 8
-};
-
-struct SpatialObj {
-    float minX = 0.0f;
-    float maxX = 0.0f;
-    float minY = 0.0f;
-    float maxY = 0.0f;
-    ObjKind kind = ObjKind::Solid;
-};
-
-struct SimParams {
-    float x0 = 0.0f;
-    float y0 = 0.0f;
-    float halfW = 15.0f;
-    float halfH = 15.0f;
-    float vx = 311.58f;
-    float vy0 = 0.0f;
-    bool upsideDown = false;
-    bool mini = false;
-    bool isWave = false;
-    bool isShip = false;
-    bool isBall = false;
-    bool isUfo = false;
-    bool isSpider = false;
-    bool onGround = true;
-    bool isPress = true;
-    bool checkGroundSupport = false;
-};
-
-inline bool isOrbKind(ObjKind k) {
-    return static_cast<uint8_t>(k) >= static_cast<uint8_t>(ObjKind::YellowOrb);
-}
 
 // Binding-safe Jump-hold reader for GD 2.2081 (handles m_holdingButtons map/array/vector or m_isHolding)
 template <typename P>
@@ -88,7 +47,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
     struct Fields {
         fwc::ModConfig cfg;
         fwc::HudOverlay* overlay = nullptr;
-        std::vector<SpatialObj> spatialCache;
+        std::vector<fwc::sim::SpatialObj> spatialCache;
         bool objectsIndexed = false;
 
         double simTime = 0.0;
@@ -96,9 +55,8 @@ class $modify(FWCPlayLayer, PlayLayer) {
         float prevPlayerX = 0.0f;
         float measuredSpeedX = 311.58f;
 
-        // Universal bot-safe input tracking (handleButton + jump-hold edge fallback)
         bool prevHolding[2] = { false, false };
-        uint64_t lastHookTick[2][2] = { { 0, 0 }, { 0, 0 } }; // [pIdx][down?1:0]
+        uint64_t lastHookTick[2][2] = { { 0, 0 }, { 0, 0 } };
         bool lastPlayerMoved = false;
     };
 
@@ -114,29 +72,33 @@ class $modify(FWCPlayLayer, PlayLayer) {
             if (!obj) continue;
             auto t = obj->m_objectType;
 
-            ObjKind kind = ObjKind::Solid;
+            fwc::sim::ObjKind kind = fwc::sim::ObjKind::Solid;
             bool keep = false;
 
             if (t == GameObjectType::Hazard || t == GameObjectType::AnimatedHazard) {
-                kind = ObjKind::Hazard;
+                kind = fwc::sim::ObjKind::Hazard;
                 keep = true;
-            } else if (t == GameObjectType::Solid || t == GameObjectType::Slope) {
-                kind = ObjKind::Solid;
+            } else if (t == GameObjectType::Solid) {
+                kind = fwc::sim::ObjKind::Solid;
+                keep = true;
+            } else if (t == GameObjectType::Slope) {
+                // Separate Slope from Solid so Wave never crashes into empty AABB corners of slopes!
+                kind = fwc::sim::ObjKind::Slope;
                 keep = true;
             } else if (t == GameObjectType::YellowJumpRing) {
-                kind = ObjKind::YellowOrb; keep = true;
+                kind = fwc::sim::ObjKind::YellowOrb; keep = true;
             } else if (t == GameObjectType::PinkJumpRing) {
-                kind = ObjKind::PinkOrb; keep = true;
+                kind = fwc::sim::ObjKind::PinkOrb; keep = true;
             } else if (t == GameObjectType::RedJumpRing) {
-                kind = ObjKind::RedOrb; keep = true;
+                kind = fwc::sim::ObjKind::RedOrb; keep = true;
             } else if (t == GameObjectType::GravityRing) {
-                kind = ObjKind::BlueOrb; keep = true;
+                kind = fwc::sim::ObjKind::BlueOrb; keep = true;
             } else if (t == GameObjectType::GreenRing) {
-                kind = ObjKind::GreenOrb; keep = true;
+                kind = fwc::sim::ObjKind::GreenOrb; keep = true;
             } else if (t == GameObjectType::DropRing) {
-                kind = ObjKind::BlackOrb; keep = true;
+                kind = fwc::sim::ObjKind::BlackOrb; keep = true;
             } else if (t == GameObjectType::DashRing || t == GameObjectType::GravityDashRing) {
-                kind = ObjKind::DashOrb; keep = true;
+                kind = fwc::sim::ObjKind::DashOrb; keep = true;
             }
 
             if (!keep) continue;
@@ -144,7 +106,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
             CCRect r = obj->getObjectRect();
             if (r.size.width <= 0.05f || r.size.height <= 0.05f) continue;
 
-            SpatialObj s;
+            fwc::sim::SpatialObj s;
             s.minX = r.getMinX();
             s.maxX = r.getMaxX();
             s.minY = r.getMinY();
@@ -153,20 +115,20 @@ class $modify(FWCPlayLayer, PlayLayer) {
             f.spatialCache.push_back(s);
         }
 
-        std::sort(f.spatialCache.begin(), f.spatialCache.end(), [](SpatialObj const& a, SpatialObj const& b) {
+        std::sort(f.spatialCache.begin(), f.spatialCache.end(), [](fwc::sim::SpatialObj const& a, fwc::sim::SpatialObj const& b) {
             return a.minX < b.minX;
         });
         f.objectsIndexed = true;
     }
 
-    void gatherLocalSlice(float xMin, float xMax, std::vector<SpatialObj>& out) {
+    void gatherLocalSlice(float xMin, float xMax, std::vector<fwc::sim::SpatialObj>& out) {
         auto const& cache = m_fields->spatialCache;
         out.clear();
         if (cache.empty()) return;
 
         auto it = std::lower_bound(
             cache.begin(), cache.end(), xMin - 90.0f,
-            [](SpatialObj const& a, float val) { return a.minX < val; }
+            [](fwc::sim::SpatialObj const& a, float val) { return a.minX < val; }
         );
         for (; it != cache.end() && it->minX <= xMax; ++it) {
             if (it->maxX >= xMin) {
@@ -175,208 +137,12 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
     }
 
-    static bool rectOverlaps(float ax0, float ax1, float ay0, float ay1, SpatialObj const& o) {
-        return ax1 > o.minX && ax0 < o.maxX && ay1 > o.minY && ay0 < o.maxY;
-    }
-
-    static bool hitsHazard(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh, bool waveMode) {
-        float px0 = cx - hw, px1 = cx + hw, py0 = cy - hh, py1 = cy + hh;
-        for (auto const& o : local) {
-            if (o.kind == ObjKind::Hazard || (waveMode && o.kind == ObjKind::Solid)) {
-                if (rectOverlaps(px0, px1, py0, py1, o)) return true;
-            }
-        }
-        return false;
-    }
-
-    static bool hitsSolidCore(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh) {
-        float px0 = cx - hw * 0.30f, px1 = cx + hw * 0.30f;
-        float py0 = cy - hh * 0.30f, py1 = cy + hh * 0.30f;
-        for (auto const& o : local) {
-            if (o.kind == ObjKind::Solid) {
-                if (rectOverlaps(px0, px1, py0, py1, o)) return true;
-            }
-        }
-        return false;
-    }
-
-    static bool hasGroundSupport(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh, bool upsideDown) {
-        if (!upsideDown && cy - hh <= 6.0f) return true;
-        float px0 = cx - hw * 0.95f, px1 = cx + hw * 0.95f;
-        float py0 = upsideDown ? (cy + hh - 4.0f) : (cy - hh - 8.0f);
-        float py1 = upsideDown ? (cy + hh + 8.0f) : (cy - hh + 4.0f);
-        for (auto const& o : local) {
-            if (o.kind == ObjKind::Solid) {
-                if (rectOverlaps(px0, px1, py0, py1, o)) return true;
-            }
-        }
-        return false;
-    }
-
-    static bool nearAnyGround(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh, bool upsideDown) {
-        if (!upsideDown && cy - hh <= 28.0f) return true;
-        float px0 = cx - hw - 10.0f, px1 = cx + hw + 10.0f;
-        float py0 = upsideDown ? (cy + hh - 6.0f) : (cy - hh - 28.0f);
-        float py1 = upsideDown ? (cy + hh + 28.0f) : (cy - hh + 6.0f);
-        for (auto const& o : local) {
-            if (o.kind == ObjKind::Solid) {
-                if (rectOverlaps(px0, px1, py0, py1, o)) return true;
-            }
-        }
-        return false;
-    }
-
-    static ObjKind findOverlappingOrb(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh, float margin, bool& found) {
-        float px0 = cx - hw - margin, px1 = cx + hw + margin;
-        float py0 = cy - hh - margin, py1 = cy + hh + margin;
-        for (auto const& o : local) {
-            if (isOrbKind(o.kind)) {
-                if (rectOverlaps(px0, px1, py0, py1, o)) {
-                    found = true;
-                    return o.kind;
-                }
-            }
-        }
-        found = false;
-        return ObjKind::Solid;
-    }
-
-    static float simulateSurvival(SimParams const& p, std::vector<SpatialObj> const& local, float deltaT, bool clickWasOrb, ObjKind orbKind) {
-        constexpr float dt = 1.0f / 240.0f;
-        float gravSign = p.upsideDown ? -1.0f : 1.0f;
-        float xClick = p.x0 + p.vx * deltaT;
-        float yClick = p.y0;
-
-        float hazHW = p.isWave ? (p.halfW * 0.32f) : (p.halfW * 0.80f);
-        float hazHH = p.isWave ? (p.halfH * 0.32f) : (p.halfH * 0.80f);
-
-        if (p.isWave) {
-            float slope = p.mini ? 2.0f : 1.0f;
-            float preVy = (p.isPress ? -1.0f : 1.0f) * gravSign * p.vx * slope;
-            yClick = p.y0 + preVy * deltaT;
-            if (deltaT > 0.0f) {
-                int preSteps = std::max(1, static_cast<int>(std::ceil(deltaT / dt)));
-                for (int s = 1; s <= preSteps; ++s) {
-                    float ts = (deltaT * static_cast<float>(s)) / static_cast<float>(preSteps);
-                    float tx = p.x0 + p.vx * ts;
-                    float ty = p.y0 + preVy * ts;
-                    if (ty < hazHH || hitsHazard(local, tx, ty, hazHW, hazHH, true)) {
-                        return 0.0f;
-                    }
-                }
-            }
-        } else if (p.onGround && !clickWasOrb && !p.isShip && !p.isUfo) {
-            if (p.checkGroundSupport && !hasGroundSupport(local, xClick, yClick, p.halfW, p.halfH, p.upsideDown)) {
-                return 0.0f;
-            }
-            if (deltaT > 0.0f) {
-                int preSteps = std::max(1, static_cast<int>(std::ceil(deltaT / dt)));
-                for (int s = 1; s <= preSteps; ++s) {
-                    float ts = (deltaT * static_cast<float>(s)) / static_cast<float>(preSteps);
-                    float tx = p.x0 + p.vx * ts;
-                    if (hitsHazard(local, tx, yClick, hazHW, hazHH, false) ||
-                        hitsSolidCore(local, tx, yClick, p.halfW, p.halfH)) {
-                        return 0.0f;
-                    }
-                }
-            }
-        } else {
-            float preG = (p.isShip ? -1050.0f : -3216.0f) * gravSign;
-            yClick = p.y0 + p.vy0 * deltaT + 0.5f * preG * deltaT * deltaT;
-        }
-
-        if (clickWasOrb) {
-            bool stillOnOrb = false;
-            findOverlappingOrb(local, xClick, yClick, p.halfW, p.halfH, 4.0f, stillOnOrb);
-            if (!stillOnOrb) return 0.0f;
-        }
-
-        float x = xClick;
-        float y = yClick;
-        float vy = 0.0f;
-        float g = (p.mini ? -3920.0f : -3216.0f) * gravSign;
-
-        if (clickWasOrb) {
-            switch (orbKind) {
-                case ObjKind::YellowOrb: vy = (p.mini ? 595.0f : 644.0f) * gravSign; break;
-                case ObjKind::PinkOrb:   vy = (p.mini ? 470.0f : 515.0f) * gravSign; break;
-                case ObjKind::RedOrb:    vy = (p.mini ? 720.0f : 790.0f) * gravSign; break;
-                case ObjKind::BlueOrb:   gravSign = -gravSign; g = -g; vy = 220.0f * gravSign; break;
-                case ObjKind::GreenOrb:  gravSign = -gravSign; g = -g; vy = 615.0f * gravSign; break;
-                case ObjKind::BlackOrb:  vy = -880.0f * gravSign; break;
-                case ObjKind::DashOrb:   vy = 0.0f; g = 0.0f; break;
-                default:                 vy = 644.0f * gravSign; break;
-            }
-        } else if (p.isWave) {
-            float slope = p.mini ? 2.0f : 1.0f;
-            vy = (p.isPress ? 1.0f : -1.0f) * gravSign * p.vx * slope;
-            g = 0.0f;
-        } else if (p.isShip) {
-            vy = p.vy0 + (p.isPress ? 150.0f : -150.0f) * gravSign;
-            g = (p.isPress ? 1180.0f : -1050.0f) * gravSign;
-        } else if (p.isUfo) {
-            vy = (p.mini ? 430.0f : 480.0f) * gravSign;
-            g = (p.mini ? -3100.0f : -2650.0f) * gravSign;
-        } else if (p.isBall) {
-            gravSign = -gravSign;
-            vy = 160.0f * gravSign;
-            g = -2650.0f * gravSign;
-        } else if (p.isSpider) {
-            float stepY = 4.0f * gravSign;
-            for (int k = 1; k <= 140; ++k) {
-                float ty = y + stepY * static_cast<float>(k);
-                if (hitsHazard(local, x, ty, hazHW, hazHH, false)) return 0.0f;
-                if (hasGroundSupport(local, x, ty, p.halfW, p.halfH, !p.upsideDown)) {
-                    y = ty;
-                    break;
-                }
-            }
-            gravSign = -gravSign;
-            vy = 0.0f;
-            g = 0.0f;
-        } else {
-            vy = (p.mini ? 632.0f : 644.0f) * gravSign;
-            g = (p.mini ? -3920.0f : -3216.0f) * gravSign;
-        }
-
-        constexpr int kSteps = 100;
-        float maxDist = p.vx * (static_cast<float>(kSteps) * dt);
-        bool startedInsideSolid = !p.isWave && hitsSolidCore(local, x, y, p.halfW, p.halfH);
-
-        for (int step = 1; step <= kSteps; ++step) {
-            x += p.vx * dt;
-            vy += g * dt;
-            y += vy * dt;
-
-            if (y < p.halfH && !p.upsideDown) {
-                if (p.isWave) return x - xClick;
-                y = p.halfH;
-                vy = 0.0f;
-                if (!p.isShip && step > 14) return maxDist;
-            }
-
-            if (hitsHazard(local, x, y, hazHW, hazHH, p.isWave)) {
-                return x - xClick;
-            }
-            if (!p.isWave && (!startedInsideSolid || step > 6) && hitsSolidCore(local, x, y, p.halfW, p.halfH)) {
-                return x - xClick;
-            }
-
-            if (!p.isWave && !p.isShip && !p.isUfo && step > 16 && (vy * gravSign < 0.0f)) {
-                if (hasGroundSupport(local, x, y, p.halfW, p.halfH, p.upsideDown)) {
-                    return maxDist;
-                }
-            }
-        }
-        return maxDist;
-    }
-
-    double computeAutoWindowFrames(PlayerObject* player, bool isPress, double refFps) {
+    double computeAutoWindowFrames(PlayerObject* player, bool isPress) {
         auto& f = *m_fields.self();
         ensureObjectsIndexed();
         if (!player) return -1.0;
 
-        SimParams p;
+        fwc::sim::SimParams p;
         CCPoint pos = player->getPosition();
         CCRect rect = player->getObjectRect();
         p.x0 = pos.x;
@@ -395,93 +161,12 @@ class $modify(FWCPlayLayer, PlayLayer) {
         p.onGround = player->m_isOnGround;
         p.isPress = isPress;
 
-        if (!isPress && !p.isWave) return -1.0;
+        std::vector<fwc::sim::SpatialObj> local;
+        gatherLocalSlice(p.x0 - 140.0f, p.x0 + p.vx * 0.50f + 120.0f, local);
 
-        std::vector<SpatialObj> local;
-        gatherLocalSlice(p.x0 - 110.0f, p.x0 + p.vx * 0.46f + 110.0f, local);
-
-        bool clickWasOrb = false;
-        ObjKind orbKind = findOverlappingOrb(local, p.x0, p.y0, p.halfW, p.halfH, 10.0f, clickWasOrb);
-
-        if (!p.isWave && !p.isShip && !p.isUfo && !p.onGround && !clickWasOrb) {
-            if (!nearAnyGround(local, p.x0, p.y0, p.halfW, p.halfH, p.upsideDown)) {
-                return -1.0;
-            }
-            p.onGround = true;
-        }
-
-        p.checkGroundSupport = p.onGround && !clickWasOrb &&
-            hasGroundSupport(local, p.x0, p.y0, p.halfW, p.halfH, p.upsideDown);
-
-        if (local.empty()) {
-            return std::clamp(0.046 * refFps, 1.0, refFps * 0.5);
-        }
-
-        constexpr int kHalfN = 24;
-        constexpr int kTotal = 2 * kHalfN + 1;
-        constexpr float kStep = 0.028f / static_cast<float>(kHalfN);
-
-        float surv[kTotal];
-        float bestSurv = 0.0f;
-
-        for (int i = 0; i < kTotal; ++i) {
-            float dT = static_cast<float>(i - kHalfN) * kStep;
-            surv[i] = simulateSurvival(p, local, dT, clickWasOrb, orbKind);
-            if (surv[i] > bestSurv) bestSurv = surv[i];
-        }
-
-        if (bestSurv < 8.0f) {
-            return std::clamp(0.042 * refFps, 1.0, refFps * 0.5);
-        }
-
-        float thresh = bestSurv * 0.92f;
-
-        int anchor = -1;
-        for (int r = 0; r <= kHalfN; ++r) {
-            if (surv[kHalfN + r] >= thresh) { anchor = kHalfN + r; break; }
-            if (r > 0 && surv[kHalfN - r] >= thresh) { anchor = kHalfN - r; break; }
-        }
-        if (anchor < 0) {
-            return std::clamp(0.042 * refFps, 1.0, refFps * 0.5);
-        }
-
-        int leftIdx = anchor;
-        while (leftIdx > 0 && surv[leftIdx - 1] >= thresh) leftIdx--;
-
-        int rightIdx = anchor;
-        while (rightIdx < kTotal - 1 && surv[rightIdx + 1] >= thresh) rightIdx++;
-
-        if (leftIdx == 0 && rightIdx == kTotal - 1) {
-            return std::clamp(0.046 * refFps, 1.0, refFps * 0.5);
-        }
-
-        float leftT = static_cast<float>(leftIdx - kHalfN) * kStep;
-        if (leftIdx > 0) {
-            float badT = leftT - kStep;
-            float goodT = leftT;
-            for (int it = 0; it < 4; ++it) {
-                float mid = 0.5f * (badT + goodT);
-                if (simulateSurvival(p, local, mid, clickWasOrb, orbKind) >= thresh) goodT = mid;
-                else badT = mid;
-            }
-            leftT = goodT;
-        }
-
-        float rightT = static_cast<float>(rightIdx - kHalfN) * kStep;
-        if (rightIdx < kTotal - 1) {
-            float goodT = rightT;
-            float badT = rightT + kStep;
-            for (int it = 0; it < 4; ++it) {
-                float mid = 0.5f * (goodT + badT);
-                if (simulateSurvival(p, local, mid, clickWasOrb, orbKind) >= thresh) goodT = mid;
-                else badT = mid;
-            }
-            rightT = goodT;
-        }
-
-        double windowSec = std::max(0.0004, static_cast<double>(rightT - leftT));
-        double frames = windowSec * std::max(30.0, refFps);
-        return std::clamp(frames, 0.10, std::max(12.0, refFps * 0.055));
+        return fwc::sim::solveAutoWindowFrames(
+            p, local, static_cast<double>(f.cfg.refFps), f.cfg.ignoreSafeClicks
+        );
     }
 
     void triggerFeedback(PlayerObject* player, double frames, std::string const& manualComment) {
@@ -494,10 +179,10 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
         if (f.cfg.soundEnabled) {
             double fps = static_cast<double>(f.cfg.refFps);
+            double displayFrames = f.cfg.cbfMode ? frames : std::max(1.0, std::round(frames));
             auto tiers = fwc::buildTiers(f.cfg.tableStyle, fps);
-            int ti = fwc::findTierIndex(tiers, frames);
-            float pitch = f.cfg.soundPitch + (f.cfg.dynamicPitch ? tiers[static_cast<size_t>(ti)].pitchOffset : 0.0f);
-            fwc::AudioManager::get().playBell(f.cfg.soundPreset, f.cfg.customSoundFile, f.cfg.soundVolume, pitch);
+            int ti = fwc::findTierIndex(tiers, displayFrames);
+            fwc::AudioManager::get().playForTier(f.cfg, tiers[static_cast<size_t>(ti)]);
         }
     }
 
@@ -519,7 +204,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
 
         if (f.cfg.mode == fwc::CounterMode::Auto || f.cfg.captureToManual) {
-            double estFrames = computeAutoWindowFrames(player, down, static_cast<double>(f.cfg.refFps));
+            double estFrames = computeAutoWindowFrames(player, down);
             if (estFrames < 0.0) return;
 
             if (f.cfg.captureToManual) {
@@ -558,6 +243,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         f.prevHolding[1] = isPlayerHoldingJump(m_player2);
 
         (void)fwc::AudioManager::get().getCustomSoundsDir();
+        fwc::TierSoundStore::get().ensureLoaded();
         fwc::MarkerStore::get().loadForLevel(level);
 
         std::string levelName = level ? std::string(level->m_levelName) : "LEVEL";
@@ -636,7 +322,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
             }
             f.prevPlayerX = curX;
 
-            // Universal Bot Fallback Detector (binding-safe m_holdingButtons check)
             auto checkPlayerHoldEdge = [&](PlayerObject* p, bool isP1) {
                 if (!p) return;
                 int pIdx = isP1 ? 0 : 1;
@@ -651,7 +336,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 checkPlayerHoldEdge(m_player2, false);
             }
 
-            // Trigger Manual markers & manual comments
             auto& markers = fwc::MarkerStore::get().markers();
             for (auto& mk : markers) {
                 if (!mk.triggered && curX >= mk.x) {
@@ -676,7 +360,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
     }
 };
 
-// Late-priority handleButton hook (runs AFTER Silicate/xdBot/Eclipse filters & receives their injected bot clicks!)
 class $modify(FWCGJBaseGameLayer, GJBaseGameLayer) {
     static void onModify(auto& self) {
         (void)self.setHookPriority("GJBaseGameLayer::handleButton", 10000);

@@ -28,6 +28,7 @@ enum class TableStyle : int {
 };
 
 struct TierDef {
+    std::string key;       // Stable key for per-tier sound overrides, e.g. "0-1", "1-2", "1", "2"
     std::string label;
     std::string introDesc;
     std::string introMs;
@@ -42,12 +43,13 @@ struct ModConfig {
     CounterMode mode = CounterMode::Auto;
     int64_t refFps = 240;
     bool cbfMode = true;
+    bool ignoreSafeClicks = true;
     TableStyle tableStyle = TableStyle::CbfRanges;
 
     bool showCircles = true;
     bool persistentCircles = true;
     float circleScale = 1.0f;
-    std::string ringThickness = "bold"; // thin / bold / thick
+    std::string ringThickness = "bold";
     bool showCircleLabel = true;
 
     bool showTierTable = true;
@@ -79,6 +81,7 @@ struct ModConfig {
         cfg.mode = (mod->getSettingValue<std::string>("mode") == "manual") ? CounterMode::Manual : CounterMode::Auto;
         cfg.refFps = std::clamp<int64_t>(mod->getSettingValue<int64_t>("ref-fps"), 30, 100000);
         cfg.cbfMode = mod->getSettingValue<bool>("cbf-mode");
+        cfg.ignoreSafeClicks = mod->getSettingValue<bool>("ignore-safe-clicks");
         cfg.tableStyle = (mod->getSettingValue<std::string>("table-style") == "discrete")
             ? TableStyle::Discrete : TableStyle::CbfRanges;
 
@@ -122,6 +125,7 @@ struct ModConfig {
         mod->setSettingValue<std::string>("mode", mode == CounterMode::Manual ? "manual" : "auto");
         mod->setSettingValue<int64_t>("ref-fps", std::clamp<int64_t>(refFps, 30, 100000));
         mod->setSettingValue<bool>("cbf-mode", cbfMode);
+        mod->setSettingValue<bool>("ignore-safe-clicks", ignoreSafeClicks);
         mod->setSettingValue<std::string>("table-style", tableStyle == TableStyle::Discrete ? "discrete" : "cbf");
 
         mod->setSettingValue<bool>("show-circles", showCircles);
@@ -181,17 +185,17 @@ inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
 
     std::vector<TierDef> tiers;
     if (style == TableStyle::CbfRanges) {
-        struct RawBucket { double lo; double hi; ccColor3B col; float pitch; };
+        struct RawBucket { const char* key; double lo; double hi; ccColor3B col; float pitch; };
         const RawBucket raw[9] = {
-            { 10.0, 1e9,  ccc3(198, 154, 255), -0.14f },
-            {  8.0, 10.0, ccc3(112, 165, 255), -0.09f },
-            {  6.0,  8.0, ccc3( 96, 226, 255), -0.04f },
-            {  5.0,  6.0, ccc3( 92, 242, 206),  0.00f },
-            {  4.0,  5.0, ccc3(118, 244, 132),  0.05f },
-            {  3.0,  4.0, ccc3(236, 246, 104),  0.10f },
-            {  2.0,  3.0, ccc3(255, 198,  72),  0.16f },
-            {  1.0,  2.0, ccc3(255, 118,  92),  0.23f },
-            {  0.0,  1.0, ccc3(255,  86, 138),  0.32f }
+            { "10+",  10.0, 1e9,  ccc3(198, 154, 255), -0.14f },
+            { "8-10",  8.0, 10.0, ccc3(112, 165, 255), -0.09f },
+            { "6-8",   6.0,  8.0, ccc3( 96, 226, 255), -0.04f },
+            { "5-6",   5.0,  6.0, ccc3( 92, 242, 206),  0.00f },
+            { "4-5",   4.0,  5.0, ccc3(118, 244, 132),  0.05f },
+            { "3-4",   3.0,  4.0, ccc3(236, 246, 104),  0.10f },
+            { "2-3",   2.0,  3.0, ccc3(255, 198,  72),  0.16f },
+            { "1-2",   1.0,  2.0, ccc3(255, 118,  92),  0.23f },
+            { "0-1",   0.0,  1.0, ccc3(255,  86, 138),  0.32f }
         };
         for (auto const& b : raw) {
             double lo = b.lo * scale;
@@ -202,18 +206,18 @@ inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
             std::string desc = (b.hi > 1e6)
                 ? fmt::format("{}+ FRAMES", fmtNum(lo))
                 : fmt::format("{}-{} FRAMES {}", fmtNum(lo), fmtNum(hi), hzDescStr(lo, hi));
-            tiers.push_back({ lbl, desc, msRangeStr(lo, hi), lo, hi, b.col, b.pitch });
+            tiers.push_back({ b.key, lbl, desc, msRangeStr(lo, hi), lo, hi, b.col, b.pitch });
         }
     } else {
-        struct RawDisc { double lo; double hi; const char* lbl; ccColor3B col; float pitch; };
+        struct RawDisc { const char* key; double lo; double hi; const char* lbl; ccColor3B col; float pitch; };
         const RawDisc raw[7] = {
-            { 8.5, 1e9,  "9-12:", ccc3(122, 160, 255), -0.10f },
-            { 6.5, 8.5,  "7-8:",  ccc3( 96, 220, 255), -0.04f },
-            { 4.5, 6.5,  "5-6:",  ccc3(106, 240, 150),  0.02f },
-            { 3.5, 4.5,  "4:",    ccc3(222, 246, 112),  0.08f },
-            { 2.5, 3.5,  "3:",    ccc3(255, 224,  88),  0.14f },
-            { 1.5, 2.5,  "2:",    ccc3(255, 156,  84),  0.22f },
-            { 0.0, 1.5,  "1:",    ccc3(255,  92, 112),  0.32f }
+            { "9-12", 8.5, 1e9,  "9-12:", ccc3(122, 160, 255), -0.10f },
+            { "7-8",  6.5, 8.5,  "7-8:",  ccc3( 96, 220, 255), -0.04f },
+            { "5-6",  4.5, 6.5,  "5-6:",  ccc3(106, 240, 150),  0.02f },
+            { "4",    3.5, 4.5,  "4:",    ccc3(222, 246, 112),  0.08f },
+            { "3",    2.5, 3.5,  "3:",    ccc3(255, 224,  88),  0.14f },
+            { "2",    1.5, 2.5,  "2:",    ccc3(255, 156,  84),  0.22f },
+            { "1",    0.0, 1.5,  "1:",    ccc3(255,  92, 112),  0.32f }
         };
         for (auto const& b : raw) {
             double lo = b.lo * scale;
@@ -222,7 +226,7 @@ inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
                 ? std::string(b.lbl)
                 : ((b.hi > 1e6) ? fmt::format("{}+:", fmtNum(lo)) : fmt::format("{}-{}:", fmtNum(lo), fmtNum(hi)));
             std::string desc = fmt::format("{} FRAMES {}", lbl.substr(0, lbl.size() - 1), hzDescStr(lo, hi));
-            tiers.push_back({ lbl, desc, msRangeStr(lo, hi), lo, hi, b.col, b.pitch });
+            tiers.push_back({ b.key, lbl, desc, msRangeStr(lo, hi), lo, hi, b.col, b.pitch });
         }
     }
     return tiers;
@@ -237,18 +241,13 @@ inline int findTierIndex(std::vector<TierDef> const& tiers, double frames) {
     return 0;
 }
 
-// Pure number without letter 'F'
 inline std::string formatCircleNumber(double frames, bool cbfMode) {
     if (!cbfMode) {
         int rounded = std::max(1, static_cast<int>(std::round(frames)));
         return fmt::format("{}", rounded);
     }
-    if (frames < 2.0) {
-        return fmt::format("{:.2f}", frames);
-    }
-    if (frames < 10.0) {
-        return fmt::format("{:.1f}", frames);
-    }
+    if (frames < 2.0) return fmt::format("{:.2f}", frames);
+    if (frames < 10.0) return fmt::format("{:.1f}", frames);
     return fmt::format("{:.0f}", std::round(frames));
 }
 
