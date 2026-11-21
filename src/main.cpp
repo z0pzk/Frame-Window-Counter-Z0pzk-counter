@@ -61,6 +61,27 @@ inline bool isOrbKind(ObjKind k) {
     return static_cast<uint8_t>(k) >= static_cast<uint8_t>(ObjKind::YellowOrb);
 }
 
+// Binding-safe Jump-hold reader for GD 2.2081 (handles m_holdingButtons map/array/vector or m_isHolding)
+template <typename P>
+bool isPlayerHoldingJump(P* p) {
+    if (!p) return false;
+    if constexpr (requires { p->m_holdingButtons.find(PlayerButton::Jump)->second; }) {
+        auto it = p->m_holdingButtons.find(PlayerButton::Jump);
+        return it != p->m_holdingButtons.end() && static_cast<bool>(it->second);
+    } else if constexpr (requires { p->m_holdingButtons.find(1)->second; }) {
+        auto it = p->m_holdingButtons.find(1);
+        return it != p->m_holdingButtons.end() && static_cast<bool>(it->second);
+    } else if constexpr (requires { p->m_holdingButtons.size(); static_cast<bool>(p->m_holdingButtons[1]); }) {
+        return p->m_holdingButtons.size() > 1 && static_cast<bool>(p->m_holdingButtons[1]);
+    } else if constexpr (requires { static_cast<bool>(p->m_holdingButtons[1]); }) {
+        return static_cast<bool>(p->m_holdingButtons[1]);
+    } else if constexpr (requires { static_cast<bool>(p->m_isHolding); }) {
+        return static_cast<bool>(p->m_isHolding);
+    } else {
+        return false;
+    }
+}
+
 } // namespace
 
 class $modify(FWCPlayLayer, PlayLayer) {
@@ -75,7 +96,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         float prevPlayerX = 0.0f;
         float measuredSpeedX = 311.58f;
 
-        // Universal bot-safe input tracking (combines handleButton + m_isHolding edge detection!)
+        // Universal bot-safe input tracking (handleButton + jump-hold edge fallback)
         bool prevHolding[2] = { false, false };
         uint64_t lastHookTick[2][2] = { { 0, 0 }, { 0, 0 } }; // [pIdx][down?1:0]
         bool lastPlayerMoved = false;
@@ -220,7 +241,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
         return ObjKind::Solid;
     }
 
-    // Simulate survival distance for a candidate click shifted by deltaT seconds
     static float simulateSurvival(SimParams const& p, std::vector<SpatialObj> const& local, float deltaT, bool clickWasOrb, ObjKind orbKind) {
         constexpr float dt = 1.0f / 240.0f;
         float gravSign = p.upsideDown ? -1.0f : 1.0f;
@@ -230,7 +250,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
         float hazHW = p.isWave ? (p.halfW * 0.32f) : (p.halfW * 0.80f);
         float hazHH = p.isWave ? (p.halfH * 0.32f) : (p.halfH * 0.80f);
 
-        // 1) Pre-click motion
         if (p.isWave) {
             float slope = p.mini ? 2.0f : 1.0f;
             float preVy = (p.isPress ? -1.0f : 1.0f) * gravSign * p.vx * slope;
@@ -248,7 +267,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
             }
         } else if (p.onGround && !clickWasOrb && !p.isShip && !p.isUfo) {
             if (p.checkGroundSupport && !hasGroundSupport(local, xClick, yClick, p.halfW, p.halfH, p.upsideDown)) {
-                return 0.0f; // Walked off ledge!
+                return 0.0f;
             }
             if (deltaT > 0.0f) {
                 int preSteps = std::max(1, static_cast<int>(std::ceil(deltaT / dt)));
@@ -272,7 +291,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
             if (!stillOnOrb) return 0.0f;
         }
 
-        // 2) Post-click kinematics
         float x = xClick;
         float y = yClick;
         float vy = 0.0f;
@@ -321,10 +339,8 @@ class $modify(FWCPlayLayer, PlayLayer) {
             g = (p.mini ? -3920.0f : -3216.0f) * gravSign;
         }
 
-        constexpr int kSteps = 100; // ~0.417s forward
+        constexpr int kSteps = 100;
         float maxDist = p.vx * (static_cast<float>(kSteps) * dt);
-
-        // Skip checking solid core collision for objects already overlapping player at start (e.g. slopes)
         bool startedInsideSolid = !p.isWave && hitsSolidCore(local, x, y, p.halfW, p.halfH);
 
         for (int step = 1; step <= kSteps; ++step) {
@@ -355,9 +371,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
         return maxDist;
     }
 
-    // Survival-peak frame window analyzer:
-    // Scans candidate timing shifts around the click, finds the peak survival duration,
-    // eliminates shifts that die early, and measures the exact width of the surviving band!
     double computeAutoWindowFrames(PlayerObject* player, bool isPress, double refFps) {
         auto& f = *m_fields.self();
         ensureObjectsIndexed();
@@ -382,7 +395,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
         p.onGround = player->m_isOnGround;
         p.isPress = isPress;
 
-        // Releases only count on Wave
         if (!isPress && !p.isWave) return -1.0;
 
         std::vector<SpatialObj> local;
@@ -391,24 +403,20 @@ class $modify(FWCPlayLayer, PlayLayer) {
         bool clickWasOrb = false;
         ObjKind orbKind = findOverlappingOrb(local, p.x0, p.y0, p.halfW, p.halfH, 10.0f, clickWasOrb);
 
-        // Conservative air-click filter: allow ground clicks, orb clicks, AND buffer clicks near ground!
         if (!p.isWave && !p.isShip && !p.isUfo && !p.onGround && !clickWasOrb) {
             if (!nearAnyGround(local, p.x0, p.y0, p.halfW, p.halfH, p.upsideDown)) {
-                return -1.0; // Pure mid-air spam click far above any surface or orb
+                return -1.0;
             }
-            p.onGround = true; // Treat buffered near-ground click as ground jump
+            p.onGround = true;
         }
 
-        // Only enforce platform-edge ground check if our solid cache confirms support at deltaT = 0
         p.checkGroundSupport = p.onGround && !clickWasOrb &&
             hasGroundSupport(local, p.x0, p.y0, p.halfW, p.halfH, p.upsideDown);
 
         if (local.empty()) {
-            // Open section with zero nearby hazards/blocks -> clean 10+ open window (~46ms = 11F @ 240Hz)
             return std::clamp(0.046 * refFps, 1.0, refFps * 0.5);
         }
 
-        // Scan 49 candidate timing shifts from -28ms to +28ms (step = 1.167ms)
         constexpr int kHalfN = 24;
         constexpr int kTotal = 2 * kHalfN + 1;
         constexpr float kStep = 0.028f / static_cast<float>(kHalfN);
@@ -422,15 +430,12 @@ class $modify(FWCPlayLayer, PlayLayer) {
             if (surv[i] > bestSurv) bestSurv = surv[i];
         }
 
-        // If every single probe died immediately (e.g. player inside a wall with Noclip), return clean open fallback instead of fake 0.14!
         if (bestSurv < 8.0f) {
             return std::clamp(0.042 * refFps, 1.0, refFps * 0.5);
         }
 
-        // A shift is "alive" if it survives at least 92% as far as the best surviving shift
         float thresh = bestSurv * 0.92f;
 
-        // Find the alive shift closest to deltaT = 0 (index kHalfN)
         int anchor = -1;
         for (int r = 0; r <= kHalfN; ++r) {
             if (surv[kHalfN + r] >= thresh) { anchor = kHalfN + r; break; }
@@ -440,19 +445,16 @@ class $modify(FWCPlayLayer, PlayLayer) {
             return std::clamp(0.042 * refFps, 1.0, refFps * 0.5);
         }
 
-        // Expand contiguous surviving interval [leftIdx, rightIdx] around anchor
         int leftIdx = anchor;
         while (leftIdx > 0 && surv[leftIdx - 1] >= thresh) leftIdx--;
 
         int rightIdx = anchor;
         while (rightIdx < kTotal - 1 && surv[rightIdx + 1] >= thresh) rightIdx++;
 
-        // If the entire [-28ms, +28ms] range survived cleanly -> open jump (~11F @ 240Hz, NOT 26F!)
         if (leftIdx == 0 && rightIdx == kTotal - 1) {
             return std::clamp(0.046 * refFps, 1.0, refFps * 0.5);
         }
 
-        // Binary-search refine both left and right boundaries to ~0.07ms sub-frame precision!
         float leftT = static_cast<float>(leftIdx - kHalfN) * kStep;
         if (leftIdx > 0) {
             float badT = leftT - kStep;
@@ -504,7 +506,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
         if (!f.cfg.enabled) return;
         if (!player) player = isPlayer1 ? m_player1 : m_player2;
         if (!player) return;
-        // Allow Noclip runs where player keeps moving even if flagged dead
         if (player->m_isDead && !f.lastPlayerMoved) return;
 
         int pIdx = isPlayer1 ? 0 : 1;
@@ -514,7 +515,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
             f.lastHookTick[pIdx][dIdx] = f.updateTick;
             f.prevHolding[pIdx] = down;
         } else {
-            // Skip if handleButton ALREADY processed this exact click on this frame!
             if (f.lastHookTick[pIdx][dIdx] == f.updateTick) return;
         }
 
@@ -554,8 +554,8 @@ class $modify(FWCPlayLayer, PlayLayer) {
         f.updateTick = 1;
         f.objectsIndexed = false;
         f.prevPlayerX = m_player1 ? m_player1->getPositionX() : 0.0f;
-        f.prevHolding[0] = m_player1 ? m_player1->m_isHolding : false;
-        f.prevHolding[1] = m_player2 ? m_player2->m_isHolding : false;
+        f.prevHolding[0] = isPlayerHoldingJump(m_player1);
+        f.prevHolding[1] = isPlayerHoldingJump(m_player2);
 
         (void)fwc::AudioManager::get().getCustomSoundsDir();
         fwc::MarkerStore::get().loadForLevel(level);
@@ -615,10 +615,9 @@ class $modify(FWCPlayLayer, PlayLayer) {
             curX = m_player1->getPositionX();
             float dx = curX - f.prevPlayerX;
 
-            // Detect checkpoint / savestate / Silicate rewind!
             if (dx < -15.0f) {
-                f.prevHolding[0] = m_player1->m_isHolding;
-                f.prevHolding[1] = m_player2 ? m_player2->m_isHolding : false;
+                f.prevHolding[0] = isPlayerHoldingJump(m_player1);
+                f.prevHolding[1] = isPlayerHoldingJump(m_player2);
                 fwc::MarkerStore::get().resetTriggersAfter(curX);
                 if (f.overlay) {
                     f.overlay->pruneCirclesAfter(curX);
@@ -637,11 +636,11 @@ class $modify(FWCPlayLayer, PlayLayer) {
             }
             f.prevPlayerX = curX;
 
-            // Universal Bot Fallback Detector (catches Silicate, xdBot, Eclipse, etc. even if they bypass handleButton!)
+            // Universal Bot Fallback Detector (binding-safe m_holdingButtons check)
             auto checkPlayerHoldEdge = [&](PlayerObject* p, bool isP1) {
                 if (!p) return;
                 int pIdx = isP1 ? 0 : 1;
-                bool curHold = p->m_isHolding;
+                bool curHold = isPlayerHoldingJump(p);
                 if (curHold != f.prevHolding[pIdx]) {
                     f.prevHolding[pIdx] = curHold;
                     handleResolvedClick(p, curHold, isP1, false);
@@ -652,7 +651,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 checkPlayerHoldEdge(m_player2, false);
             }
 
-            // Trigger Manual markers (full circle+sound in Manual mode; manual comments also work in Auto!)
+            // Trigger Manual markers & manual comments
             auto& markers = fwc::MarkerStore::get().markers();
             for (auto& mk : markers) {
                 if (!mk.triggered && curX >= mk.x) {
@@ -684,7 +683,6 @@ class $modify(FWCGJBaseGameLayer, GJBaseGameLayer) {
     }
 
     void handleButton(bool down, int button, bool isPlayer1) {
-        // Capture pre-jump player state BEFORE original mutates m_isOnGround!
         if (button == 1) {
             if (auto* pl = typeinfo_cast<PlayLayer*>(this)) {
                 auto* fwcPl = static_cast<FWCPlayLayer*>(pl);
