@@ -55,7 +55,7 @@ private:
     TierDef activeTierDef() {
         auto tiers = currentTiers();
         if (!m_tierIdxInited && !tiers.empty()) {
-            m_selectedTierIdx = static_cast<int>(tiers.size()) - 1;
+            m_selectedTierIdx = (m_cfg.tableStyle == TableStyle::TopDown24) ? 0 : (static_cast<int>(tiers.size()) - 1);
             m_tierIdxInited = true;
         }
         m_selectedTierIdx = std::clamp(m_selectedTierIdx, 0, static_cast<int>(tiers.size()) - 1);
@@ -120,7 +120,7 @@ private:
         bg->setPosition({ w * 0.5f, h * 0.5f });
         root->addChild(bg, 0);
         auto* lbl = CCLabelBMFont::create(text, "bigFont.fnt");
-        lbl->setScale(0.30f);
+        lbl->setScale(0.28f);
         lbl->setPosition({ w * 0.5f, h * 0.5f + 0.5f });
         root->addChild(lbl, 1);
         return root;
@@ -243,24 +243,19 @@ private:
             });
             m_contentNode->addChild(fpsInput, 8);
 
+            // 3 Tier Table Presets: [1->24] [0-1] [1/2/3]
             addLabel(m_contentNode, "Tiers:", leftX, topY - 62.0f, 0.34f, "goldFont.fnt");
-            bool isCbfTbl = (m_cfg.tableStyle == TableStyle::CbfRanges);
-
-            auto* cbfTblBtn = CCMenuItemSpriteExtra::create(
-                makeMiniBtn("0-1 / 1-2", 70.0f, 21.0f, isCbfTbl ? "GJ_button_01.png" : "GJ_button_04.png"),
-                this, menu_selector(SettingsPopup::onTableStyleBtn)
-            );
-            cbfTblBtn->setTag(0);
-            cbfTblBtn->setPosition({ leftX + 92.0f, topY - 62.0f });
-            menu->addChild(cbfTblBtn);
-
-            auto* discTblBtn = CCMenuItemSpriteExtra::create(
-                makeMiniBtn("1 / 2 / 3", 70.0f, 21.0f, !isCbfTbl ? "GJ_button_01.png" : "GJ_button_04.png"),
-                this, menu_selector(SettingsPopup::onTableStyleBtn)
-            );
-            discTblBtn->setTag(1);
-            discTblBtn->setPosition({ leftX + 168.0f, topY - 62.0f });
-            menu->addChild(discTblBtn);
+            const char* tNames[3] = { "1->24", "0-1", "1/2/3" };
+            for (int i = 0; i < 3; ++i) {
+                bool sel = (static_cast<int>(m_cfg.tableStyle) == i);
+                auto* tb = CCMenuItemSpriteExtra::create(
+                    makeMiniBtn(tNames[i], 46.0f, 21.0f, sel ? "GJ_button_01.png" : "GJ_button_04.png"),
+                    this, menu_selector(SettingsPopup::onTableStyleBtn)
+                );
+                tb->setTag(i);
+                tb->setPosition({ leftX + 74.0f + i * 50.0f, topY - 62.0f });
+                menu->addChild(tb);
+            }
 
             addLabel(m_contentNode, "Ring:", rightX, topY - 62.0f, 0.34f, "goldFont.fnt");
             const char* rKeys[3] = { "thin", "bold", "thick" };
@@ -283,9 +278,10 @@ private:
             addCheckboxRow(m_contentNode, menu, "Circle Numbers", m_cfg.showCircleLabel, 104, rightX, topY - 126.0f);
 
             addStepperRow(m_contentNode, menu, "Circle Size", fmt::format("{:.1f}x", m_cfg.circleScale), 200, 201, leftX, topY - 156.0f, colW);
+            addCheckboxRow(m_contentNode, menu, "Auto Comments", m_cfg.showAutoComments, 105, rightX, topY - 156.0f);
 
             auto* tip = CCLabelBMFont::create(
-                "Play or run Silicate once, then press Scan Exact for 100% real GD physics frame windows!",
+                "Play or run Silicate once, then press Scan Exact for 100% real GD engine frame windows!",
                 "chatFont.fnt"
             );
             tip->setScale(0.52f);
@@ -349,7 +345,7 @@ private:
             m_contentNode->addChild(precInput, 8);
         }
         else if (m_activeTab == 2) {
-            // AUDIO TAB (Default vs Per-Frame Independent Overrides)
+            // AUDIO TAB
             auto tiers = currentTiers();
             int ovCount = TierSoundStore::get().countActiveOverrides(tiers);
 
@@ -682,7 +678,8 @@ private:
     }
 
     void onTableStyleBtn(CCObject* sender) {
-        m_cfg.tableStyle = (static_cast<CCNode*>(sender)->getTag() == 1) ? TableStyle::Discrete : TableStyle::CbfRanges;
+        int v = std::clamp(static_cast<CCNode*>(sender)->getTag(), 0, 2);
+        m_cfg.tableStyle = static_cast<TableStyle>(v);
         m_tierIdxInited = false;
         applyAndRebuild();
     }
@@ -716,6 +713,7 @@ private:
             case 102: m_cfg.showCircles = !m_cfg.showCircles; break;
             case 103: m_cfg.persistentCircles = !m_cfg.persistentCircles; break;
             case 104: m_cfg.showCircleLabel = !m_cfg.showCircleLabel; break;
+            case 105: m_cfg.showAutoComments = !m_cfg.showAutoComments; break;
             case 110: m_cfg.showTierTable = !m_cfg.showTierTable; break;
             case 111: m_cfg.showMsHz = !m_cfg.showMsHz; break;
             case 112: m_cfg.showBottomStats = !m_cfg.showBottomStats; break;

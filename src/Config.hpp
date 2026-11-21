@@ -23,8 +23,9 @@ enum class BannerMode : int {
 };
 
 enum class TableStyle : int {
-    CbfRanges = 0,
-    Discrete = 1
+    TopDown24 = 0, // 1, 2, 3, 4, 5-6, 7-8, 9-12, 13-16, 17-24 (tightest at TOP!)
+    CbfRanges = 1, // 10+, 8-10, 6-8, 5-6, 4-5, 3-4, 2-3, 1-2, 0-1
+    Discrete  = 2  // 9-12, 7-8, 5-6, 4, 3, 2, 1
 };
 
 struct TierDef {
@@ -43,7 +44,7 @@ struct ModConfig {
     CounterMode mode = CounterMode::Auto;
     int64_t refFps = 240;
     bool cbfMode = true;
-    TableStyle tableStyle = TableStyle::CbfRanges;
+    TableStyle tableStyle = TableStyle::TopDown24;
 
     bool showCircles = true;
     bool persistentCircles = true;
@@ -57,7 +58,8 @@ struct ModConfig {
     bool showWatermark = true;
     std::string watermarkText = "FWC COUNTER";
 
-    float commentFadeSec = 2.2f;
+    bool showAutoComments = true;
+    float commentFadeSec = 2.4f;
 
     BannerMode bannerMode = BannerMode::FirstOnly;
     float bannerDuration = 2.8f;
@@ -80,8 +82,11 @@ struct ModConfig {
         cfg.mode = (mod->getSettingValue<std::string>("mode") == "manual") ? CounterMode::Manual : CounterMode::Auto;
         cfg.refFps = std::clamp<int64_t>(mod->getSettingValue<int64_t>("ref-fps"), 30, 100000);
         cfg.cbfMode = mod->getSettingValue<bool>("cbf-mode");
-        cfg.tableStyle = (mod->getSettingValue<std::string>("table-style") == "discrete")
-            ? TableStyle::Discrete : TableStyle::CbfRanges;
+
+        auto ts = mod->getSettingValue<std::string>("table-style");
+        if (ts == "cbf") cfg.tableStyle = TableStyle::CbfRanges;
+        else if (ts == "discrete") cfg.tableStyle = TableStyle::Discrete;
+        else cfg.tableStyle = TableStyle::TopDown24;
 
         cfg.showCircles = mod->getSettingValue<bool>("show-circles");
         cfg.persistentCircles = mod->getSettingValue<bool>("persistent-circles");
@@ -95,6 +100,7 @@ struct ModConfig {
         cfg.showWatermark = mod->getSettingValue<bool>("show-watermark");
         cfg.watermarkText = mod->getSettingValue<std::string>("watermark-text");
 
+        cfg.showAutoComments = mod->getSettingValue<bool>("show-auto-comments");
         cfg.commentFadeSec = static_cast<float>(mod->getSettingValue<double>("comment-fade-sec"));
 
         auto bm = mod->getSettingValue<std::string>("banner-mode");
@@ -123,7 +129,11 @@ struct ModConfig {
         mod->setSettingValue<std::string>("mode", mode == CounterMode::Manual ? "manual" : "auto");
         mod->setSettingValue<int64_t>("ref-fps", std::clamp<int64_t>(refFps, 30, 100000));
         mod->setSettingValue<bool>("cbf-mode", cbfMode);
-        mod->setSettingValue<std::string>("table-style", tableStyle == TableStyle::Discrete ? "discrete" : "cbf");
+
+        std::string ts = "topdown24";
+        if (tableStyle == TableStyle::CbfRanges) ts = "cbf";
+        else if (tableStyle == TableStyle::Discrete) ts = "discrete";
+        mod->setSettingValue<std::string>("table-style", ts);
 
         mod->setSettingValue<bool>("show-circles", showCircles);
         mod->setSettingValue<bool>("persistent-circles", persistentCircles);
@@ -137,6 +147,7 @@ struct ModConfig {
         mod->setSettingValue<bool>("show-watermark", showWatermark);
         mod->setSettingValue<std::string>("watermark-text", watermarkText);
 
+        mod->setSettingValue<bool>("show-auto-comments", showAutoComments);
         mod->setSettingValue<double>("comment-fade-sec", std::clamp(static_cast<double>(commentFadeSec), 0.5, 8.0));
 
         std::string bm = "first";
@@ -181,7 +192,30 @@ inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
     };
 
     std::vector<TierDef> tiers;
-    if (style == TableStyle::CbfRanges) {
+    if (style == TableStyle::TopDown24) {
+        // Exact order & palette: 1, 2, 3, 4, 5-6, 7-8, 9-12, 13-16, 17-24
+        struct RawTD { const char* key; double lo; double hi; const char* lbl; ccColor3B col; float pitch; };
+        const RawTD raw[9] = {
+            { "1",     0.0,  1.5,  "1:",     ccc3(255, 110, 102),  0.32f },
+            { "2",     1.5,  2.5,  "2:",     ccc3(255, 184,  88),  0.22f },
+            { "3",     2.5,  3.5,  "3:",     ccc3(255, 240, 106),  0.14f },
+            { "4",     3.5,  4.5,  "4:",     ccc3(244, 248, 255),  0.07f },
+            { "5-6",   4.5,  6.5,  "5-6:",   ccc3(114, 244, 134),  0.01f },
+            { "7-8",   6.5,  8.5,  "7-8:",   ccc3(110, 224, 255), -0.05f },
+            { "9-12",  8.5, 12.5,  "9-12:",  ccc3(118, 168, 255), -0.10f },
+            { "13-16",12.5, 16.5,  "13-16:", ccc3(196, 164, 255), -0.15f },
+            { "17-24",16.5, 1e9,   "17-24:", ccc3(244, 162, 232), -0.20f }
+        };
+        for (auto const& b : raw) {
+            double lo = b.lo * scale;
+            double hi = (b.hi > 1e6) ? 1e9 : (b.hi * scale);
+            std::string lbl = (std::fabs(scale - 1.0) < 0.05)
+                ? std::string(b.lbl)
+                : ((b.hi > 1e6) ? fmt::format("{}+:", fmtNum(lo)) : fmt::format("{}-{}:", fmtNum(lo), fmtNum(hi)));
+            std::string desc = fmt::format("{} FRAMES {}", lbl.substr(0, lbl.size() - 1), hzDescStr(lo, hi));
+            tiers.push_back({ b.key, lbl, desc, msRangeStr(lo, hi), lo, hi, b.col, b.pitch });
+        }
+    } else if (style == TableStyle::CbfRanges) {
         struct RawBucket { const char* key; double lo; double hi; ccColor3B col; float pitch; };
         const RawBucket raw[9] = {
             { "10+",  10.0, 1e9,  ccc3(198, 154, 255), -0.14f },
@@ -229,13 +263,16 @@ inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
     return tiers;
 }
 
+// Works for BOTH ascending (1 -> 24) and descending (10+ -> 0-1) tier tables!
 inline int findTierIndex(std::vector<TierDef> const& tiers, double frames) {
-    for (int i = static_cast<int>(tiers.size()) - 1; i >= 0; --i) {
-        if (frames < tiers[static_cast<size_t>(i)].maxF) {
-            return i;
+    if (tiers.empty()) return 0;
+    for (size_t i = 0; i < tiers.size(); ++i) {
+        if (frames >= tiers[i].minF && frames < tiers[i].maxF) {
+            return static_cast<int>(i);
         }
     }
-    return 0;
+    // Fallback to closest boundary
+    return (tiers.front().minF <= 0.001) ? static_cast<int>(tiers.size()) - 1 : 0;
 }
 
 inline std::string formatCircleNumber(double frames, bool cbfMode) {
@@ -256,6 +293,12 @@ inline double framesToHz(double frames, double refFps) {
     double sec = frames / std::max(1.0, refFps);
     if (sec <= 1e-6) return 99999.0;
     return 1.0 / sec;
+}
+
+// Calibrated Raw Precision difficulty weight per click (in sigma/s units)
+inline double clickPrecisionWeight(double ms) {
+    double clampedMs = std::max(0.5, ms);
+    return std::pow(18.0 / clampedMs, 1.45);
 }
 
 } // namespace fwc

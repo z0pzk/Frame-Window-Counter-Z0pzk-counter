@@ -8,9 +8,9 @@
     },
     "id": "z0pzk.frame-window-counter",
     "name": "Frame Window Counter",
-    "version": "v6.0.0",
+    "version": "v7.0.0",
     "developer": "z0pzk",
-    "description": "Frame & CBF Window Counter with Real-Engine Pathfinder Scanner (exact GD physics probing), upgraded Live Auto solver (slopes/wave/spider/cube), Manual markers & comments, per-tier independent custom sounds, bold static circles, and full bot support.",
+    "description": "Exact GD 2.2 Frame & CBF Window Counter with strict exact-physics Auto solver, Real-Engine Pathfinder Scanner (Scan Exact), bright additive tier glow, auto & manual callout comments, 1->24 / CBF / Discrete tier tables, and independent per-tier sounds.",
     "resources": {
         "files": [
             "resources/*.wav",
@@ -47,8 +47,9 @@
         "table-style": {
             "type": "string",
             "name": "Table Tier Style",
-            "default": "cbf",
+            "default": "topdown24",
             "one-of": [
+                "topdown24",
                 "cbf",
                 "discrete"
             ]
@@ -110,10 +111,15 @@
             "name": "Watermark Text",
             "default": "FWC COUNTER"
         },
+        "show-auto-comments": {
+            "type": "bool",
+            "name": "Show Auto Callout Comments",
+            "default": true
+        },
         "comment-fade-sec": {
             "type": "float",
-            "name": "Manual Comment Fade (sec)",
-            "default": 2.2,
+            "name": "Comment Fade Time (sec)",
+            "default": 2.4,
             "min": 0.5,
             "max": 8.0
         },

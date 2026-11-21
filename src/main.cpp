@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <vector>
 
@@ -27,6 +28,7 @@ struct RecordedClick {
     float y = 30.0f;
     bool down = true;
     bool isP1 = true;
+    bool releaseMatters = false;
 };
 
 enum class ScanPhase : int {
@@ -99,6 +101,16 @@ bool safeHasCompleted(PL* pl) {
     }
 }
 
+template <typename PL>
+float safeGetLevelLength(PL* pl) {
+    if (!pl) return 1000.0f;
+    if constexpr (requires { static_cast<float>(pl->m_levelLength); }) {
+        return std::max(100.0f, static_cast<float>(pl->m_levelLength));
+    } else {
+        return 1000.0f;
+    }
+}
+
 inline uint8_t computeSlopeType(GameObject* obj) {
     float dx = 1.0f;
     float dy = -1.0f;
@@ -131,6 +143,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         bool prevHolding[2] = { false, false };
         uint64_t lastHookTick[2][2] = { { 0, 0 }, { 0, 0 } };
         bool lastPlayerMoved = false;
+        std::deque<double> recentClicks;
 
         std::vector<RecordedClick> currentRun;
         std::vector<RecordedClick> savedRun;
@@ -149,7 +162,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
         int probeTick = 0;
         int baseClickTick = 0;
-        int baseSurvivedTicks = 0;
         float baseEndX = 0.0f;
         CCPoint baseClickPos = ccp(0.0f, 30.0f);
         bool targetFiredThisProbe = false;
@@ -166,6 +178,18 @@ class $modify(FWCPlayLayer, PlayLayer) {
     size_t getRecordedClickCount() {
         auto& f = *m_fields.self();
         return std::max(f.currentRun.size(), f.savedRun.size());
+    }
+
+    void syncPlannedPrecisionToOverlay() {
+        auto& f = *m_fields.self();
+        if (!f.overlay) return;
+        double fps = static_cast<double>(f.cfg.refFps);
+        double total = 0.0;
+        for (auto const& mk : fwc::MarkerStore::get().markers()) {
+            double df = f.cfg.cbfMode ? mk.frames : std::max(1.0, std::round(mk.frames));
+            total += fwc::clickPrecisionWeight(fwc::framesToMs(df, fps));
+        }
+        f.overlay->setPlannedTotalPrecision(total);
     }
 
     void ensureObjectsIndexed() {
@@ -272,7 +296,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         p.isPress = isPress;
 
         std::vector<fwc::sim::SpatialObj> local;
-        gatherLocalSlice(p.x0 - 140.0f, p.x0 + p.vx * 0.52f + 120.0f, local);
+        gatherLocalSlice(p.x0 - 150.0f, p.x0 + p.vx * 0.54f + 130.0f, local);
 
         return fwc::sim::solveAutoWindowFrames(p, local, static_cast<double>(f.cfg.refFps));
     }
@@ -281,8 +305,14 @@ class $modify(FWCPlayLayer, PlayLayer) {
         auto& f = *m_fields.self();
         if (!f.cfg.enabled || f.isScanning || !player) return;
 
+        f.recentClicks.push_back(f.simTime);
+        while (!f.recentClicks.empty() && (f.simTime - f.recentClicks.front()) > 1.0) {
+            f.recentClicks.pop_front();
+        }
+        double liveCps = static_cast<double>(f.recentClicks.size());
+
         if (f.overlay) {
-            f.overlay->onClickTriggered(m_objectLayer, player->getPosition(), frames, manualComment);
+            f.overlay->onClickTriggered(m_objectLayer, player->getPosition(), frames, manualComment, f.simTime, liveCps);
         }
 
         if (f.cfg.soundEnabled) {
@@ -308,8 +338,9 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 break;
             }
         }
-        if (f.currentRun.size() < 2500) {
-            f.currentRun.push_back({ pos.x, pos.y, down, isPlayer1 });
+        bool relMatters = player->m_isDart || player->m_isShip || player->m_isRobot || player->m_isSwing;
+        if (f.currentRun.size() < 3000) {
+            f.currentRun.push_back({ pos.x, pos.y, down, isPlayer1, relMatters });
             if (f.currentRun.size() >= f.savedRun.size()) {
                 f.savedRun = f.currentRun;
             }
@@ -350,9 +381,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
     }
 
-    // =========================================================================
-    // REAL-ENGINE PATHFINDER SCANNER
-    // =========================================================================
     void injectScanButton(bool down, bool isP1) {
         auto& f = *m_fields.self();
         f.scannerInjecting = true;
@@ -362,6 +390,9 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
     void resetProbeState() {
         auto& f = *m_fields.self();
+        injectScanButton(false, true);
+        injectScanButton(false, false);
+
         f.scanProbeDied = false;
         f.probeTick = 0;
         f.targetFiredThisProbe = false;
@@ -410,6 +441,8 @@ class $modify(FWCPlayLayer, PlayLayer) {
             f.overlay->setScanStatus(true, fmt::format("SCANNING 1 / {}...", f.scanClicks.size()));
         }
 
+        injectScanButton(false, true);
+        injectScanButton(false, false);
         safeResetFromStart(this);
         f.scanProbeDied = false;
     }
@@ -417,6 +450,9 @@ class $modify(FWCPlayLayer, PlayLayer) {
     void finishOrCancelScan(bool completed) {
         auto& f = *m_fields.self();
         if (!f.isScanning) return;
+
+        injectScanButton(false, true);
+        injectScanButton(false, false);
 
         f.isScanning = false;
         f.scannerInjecting = false;
@@ -434,6 +470,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         if (completed && f.totalSolved > 0) {
             f.cfg.mode = fwc::CounterMode::Manual;
             f.cfg.save();
+            syncPlannedPrecisionToOverlay();
             if (f.overlay) {
                 f.overlay->reloadConfig(m_objectLayer);
             }
@@ -442,7 +479,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         safeResetFromStart(this);
 
         if (completed && f.overlay) {
-            f.overlay->showManualCallout(
+            f.overlay->showCallout(
                 fmt::format("SCAN COMPLETE\n{} EXACT CLICKS", f.totalSolved),
                 ccc3(118, 244, 132)
             );
@@ -454,13 +491,13 @@ class $modify(FWCPlayLayer, PlayLayer) {
         if (!f.isScanning) return;
 
         constexpr float kFixedDt = 1.0f / 240.0f;
-        constexpr int kLookaheadTicks = 120;
-        constexpr int kMaxShift = 18;
+        constexpr int kLookaheadTicks = 150;
+        constexpr int kMaxShift = 24;
 
         auto tStart = std::chrono::steady_clock::now();
         int stepsDone = 0;
 
-        while (f.isScanning && stepsDone < 260) {
+        while (f.isScanning && stepsDone < 280) {
             if ((stepsDone & 7) == 7) {
                 auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - tStart
@@ -468,6 +505,12 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 if (elapsedMs >= 7) break;
             }
             stepsDone++;
+
+            while (f.scanClickIdx < f.scanClicks.size() &&
+                   !f.scanClicks[f.scanClickIdx].down &&
+                   !f.scanClicks[f.scanClickIdx].releaseMatters) {
+                f.scanClickIdx++;
+            }
 
             if (f.scanClickIdx >= f.scanClicks.size()) {
                 finishOrCancelScan(true);
@@ -488,14 +531,13 @@ class $modify(FWCPlayLayer, PlayLayer) {
             };
 
             if (f.scanPhase == ScanPhase::ApproachCheckpoint) {
-                float targetCpX = std::max(0.0f, f.scanClicks[i].x - 75.0f);
+                float targetCpX = std::max(0.0f, f.scanClicks[i].x - 85.0f);
 
                 if (targetCpX <= 12.0f) {
                     f.hasActiveCp = false;
                     f.cpStartIdx = 0;
                     f.scanPhase = ScanPhase::MeasureBaseline;
                     f.baseClickTick = -1;
-                    f.baseSurvivedTicks = 0;
                     f.baseEndX = 0.0f;
                     resetProbeState();
                     continue;
@@ -511,7 +553,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
                     }
                     f.scanPhase = ScanPhase::MeasureBaseline;
                     f.baseClickTick = -1;
-                    f.baseSurvivedTicks = 0;
                     f.baseEndX = 0.0f;
                     resetProbeState();
                     continue;
@@ -539,7 +580,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 f.probeTick++;
 
                 bool finishedLookahead = f.targetFiredThisProbe && ((f.probeTick - f.baseClickTick) >= kLookaheadTicks);
-                bool failedBeforeTarget = !f.targetFiredThisProbe && (f.scanProbeDied || f.probeTick > 240);
+                bool failedBeforeTarget = !f.targetFiredThisProbe && (f.scanProbeDied || f.probeTick > 260);
 
                 if (failedBeforeTarget) {
                     f.scanClickIdx++;
@@ -550,9 +591,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
                 if (finishedLookahead || f.scanProbeDied || safeHasCompleted(this)) {
                     f.baseEndX = m_player1 ? m_player1->getPositionX() : curX;
-                    f.baseSurvivedTicks = f.targetFiredThisProbe ? (f.probeTick - f.baseClickTick) : 0;
                     if (f.baseClickTick < 0) f.baseClickTick = f.probeTick;
-
                     f.scanPhase = ScanPhase::TestSkip;
                     resetProbeState();
                 }
@@ -565,7 +604,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 bool doneTicks = (f.probeTick - f.baseClickTick) >= kLookaheadTicks;
                 if (f.scanProbeDied || doneTicks || safeHasCompleted(this)) {
                     float endX = m_player1 ? m_player1->getPositionX() : curX;
-                    bool survivedWithoutClick = !f.scanProbeDied && (endX >= f.baseEndX - 12.0f);
+                    bool survivedWithoutClick = !f.scanProbeDied && (endX >= f.baseEndX - 8.0f);
 
                     if (survivedWithoutClick) {
                         f.scanClickIdx++;
@@ -602,7 +641,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 bool doneTicks = (f.probeTick - f.baseClickTick) >= kLookaheadTicks;
                 if (f.scanProbeDied || doneTicks || safeHasCompleted(this)) {
                     float endX = m_player1 ? m_player1->getPositionX() : curX;
-                    bool survived = !f.scanProbeDied && (endX >= f.baseEndX - 18.0f);
+                    bool survived = !f.scanProbeDied && (endX >= f.baseEndX - 10.0f);
 
                     if (f.scanPhase == ScanPhase::TestLate) {
                         if (survived && f.currentDelta < kMaxShift) {
@@ -650,6 +689,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
     void reloadFromSettings() {
         auto& f = *m_fields.self();
         f.cfg = fwc::ModConfig::load();
+        syncPlannedPrecisionToOverlay();
         if (f.overlay) {
             f.overlay->reloadConfig(m_objectLayer);
         }
@@ -698,6 +738,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         f.overlay = fwc::HudOverlay::create(levelName, m_objectLayer);
         if (f.overlay) {
             this->addChild(f.overlay, 100);
+            syncPlannedPrecisionToOverlay();
         }
         return true;
     }
@@ -718,6 +759,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
             f.savedRun = f.currentRun;
         }
         f.currentRun.clear();
+        f.recentClicks.clear();
 
         f.cfg = fwc::ModConfig::load();
         f.simTime = 0.0;
@@ -731,6 +773,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
         ensureObjectsIndexed();
         fwc::MarkerStore::get().resetTriggers();
+        syncPlannedPrecisionToOverlay();
 
         if (f.overlay) {
             f.overlay->resetAttempt(m_objectLayer);
@@ -788,6 +831,12 @@ class $modify(FWCPlayLayer, PlayLayer) {
             }
             f.prevPlayerX = curX;
 
+            if (f.overlay) {
+                float len = safeGetLevelLength(this);
+                double pct = safeHasCompleted(this) ? 100.0 : (static_cast<double>(curX) * 100.0 / static_cast<double>(len));
+                f.overlay->setLevelProgress(pct);
+            }
+
             auto checkPlayerHoldEdge = [&](PlayerObject* p, bool isP1) {
                 if (!p) return;
                 int pIdx = isP1 ? 0 : 1;
@@ -811,7 +860,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                     } else if (!mk.comment.empty() && f.overlay) {
                         auto tiers = fwc::buildTiers(f.cfg.tableStyle, static_cast<double>(f.cfg.refFps));
                         int ti = fwc::findTierIndex(tiers, mk.frames);
-                        f.overlay->showManualCallout(mk.comment, tiers[static_cast<size_t>(ti)].color);
+                        f.overlay->showCallout(mk.comment, tiers[static_cast<size_t>(ti)].color);
                     }
                 }
             }
