@@ -26,7 +26,7 @@ struct SpatialObj {
     float minY = 0.0f;
     float maxY = 0.0f;
     ObjKind kind = ObjKind::Solid;
-    uint8_t slopeType = 0; // 0=BR, 1=BL, 2=TR, 3=TL
+    uint8_t slopeType = 0;
 };
 
 struct SimParams {
@@ -47,9 +47,6 @@ struct SimParams {
     bool isPress = true;
 };
 
-// EXACT Geometry Dash 2.2 PlayerObject::updateJump constants (includes the 0.9 Y-factor -> 60 * 0.9 = 54.0!):
-// Normal Cube: yVel0 = 11.180032 -> 603.722 u/s, gravity = 0.958199 -> 3104.565 u/s^2
-// Mini Cube:   yVel0 =  8.944026 -> 482.977 u/s, gravity = 0.958199 -> 3104.565 u/s^2
 constexpr float kCubeVyNormal = 603.722f;
 constexpr float kCubeVyMini   = 482.977f;
 constexpr float kCubeGrav     = 3104.565f;
@@ -99,7 +96,6 @@ inline bool hitsSolidCore(std::vector<SpatialObj> const& local, float cx, float 
     return false;
 }
 
-// GD cube landing includes ~9u top-snap tolerance onto solid blocks (so H=58.7u lands cleanly on 60u 2-block platforms!)
 inline bool findSupportY(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh, bool upsideDown, float& outCenterY) {
     if (!upsideDown && cy - hh <= 4.5f) {
         outCenterY = hh;

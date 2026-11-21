@@ -6,6 +6,8 @@
 #include "AudioManager.hpp"
 #include "Config.hpp"
 #include "HudOverlay.hpp"
+#include "InternalRenderer.hpp"
+#include "LevelDifficultyStore.hpp"
 #include "MarkerStore.hpp"
 #include "SettingsPopup.hpp"
 #include "TierSoundStore.hpp"
@@ -34,7 +36,19 @@ struct RecordedClick {
 struct PendingClick {
     CCPoint pos;
     double frames = 1.0;
+    double hazardFrac = 0.1;
     int ticksLeft = 2;
+};
+
+struct PlayerPhysicsSnapshot {
+    bool valid = false;
+    float x = 0.0f;
+    float y = 0.0f;
+    float vy = 0.0f;
+    float prevDy = 0.0f;
+    bool onGround = true;
+    bool upsideDown = false;
+    bool isWave = false;
 };
 
 enum class ScanPhase : int {
@@ -121,16 +135,6 @@ bool safeHasCompleted(PL* pl) {
     }
 }
 
-template <typename PL>
-float safeGetLevelLength(PL* pl) {
-    if (!pl) return 1000.0f;
-    if constexpr (requires { static_cast<float>(pl->m_levelLength); }) {
-        return std::max(100.0f, static_cast<float>(pl->m_levelLength));
-    } else {
-        return 1000.0f;
-    }
-}
-
 inline uint8_t computeSlopeType(GameObject* obj) {
     float dx = 1.0f;
     float dy = -1.0f;
@@ -152,23 +156,34 @@ class $modify(FWCPlayLayer, PlayLayer) {
     struct Fields {
         fwc::ModConfig cfg;
         fwc::HudOverlay* overlay = nullptr;
+        std::string levelName;
+        std::string levelKey;
         std::vector<fwc::sim::SpatialObj> spatialCache;
+        std::vector<float> hazardXSorted;
         bool objectsIndexed = false;
 
         double simTime = 0.0;
         uint64_t updateTick = 0;
+        uint64_t lastPostStepTick = 0;
         float prevPlayerX = 0.0f;
         float measuredSpeedX = 311.58f;
 
         bool prevHolding[2] = { false, false };
         uint64_t lastHookTick[2][2] = { { 0, 0 }, { 0, 0 } };
+        PlayerPhysicsSnapshot physSnap[2];
         bool isDeadThisAttempt = false;
+        bool completedSavedThisAttempt = false;
         std::vector<PendingClick> pendingClicks;
         std::deque<double> recentClicks;
 
         std::vector<RecordedClick> currentRun;
         std::vector<RecordedClick> savedRun;
 
+        // Built-in Renderer state
+        bool isRendering = false;
+        int outroFramesLeft = 0;
+
+        // Real-Engine Pathfinder Scanner state
         bool isScanning = false;
         bool scanProbeDied = false;
         bool wasPracticeBeforeScan = false;
@@ -196,22 +211,51 @@ class $modify(FWCPlayLayer, PlayLayer) {
     };
 
     bool isScanning() { return m_fields->isScanning; }
+    bool isRendering() { return m_fields->isRendering; }
+
+    bool isIntroFreezing() {
+        auto& f = *m_fields.self();
+        return f.overlay && f.overlay->isIntroFreezing();
+    }
+
+    void stepIntroFreeze(float dt) {
+        auto& f = *m_fields.self();
+        if (f.overlay) f.overlay->stepIntroOnly(dt);
+    }
+
+    void bumpUpdateTick() {
+        m_fields->updateTick++;
+    }
 
     size_t getRecordedClickCount() {
         auto& f = *m_fields.self();
         return std::max(f.currentRun.size(), f.savedRun.size());
     }
 
-    void syncPlannedPrecisionToOverlay() {
+    double hazardFractionAt(float x) {
+        auto const& hx = m_fields->hazardXSorted;
+        if (hx.empty()) return 0.5;
+        auto it = std::upper_bound(hx.begin(), hx.end(), x + 30.0f);
+        size_t passed = static_cast<size_t>(it - hx.begin());
+        return std::clamp(static_cast<double>(passed) / static_cast<double>(hx.size()), 0.01, 1.0);
+    }
+
+    void syncKnownTotalDifficultyToOverlay() {
         auto& f = *m_fields.self();
         if (!f.overlay) return;
-        double fps = static_cast<double>(f.cfg.refFps);
-        double total = 0.0;
-        for (auto const& mk : fwc::MarkerStore::get().markers()) {
-            double df = fwc::resolveDisplayFrames(mk.frames, f.cfg.cbfMode);
-            total += fwc::clickPrecisionWeight(fwc::framesToMs(df, fps));
+
+        double knownTotal = 0.0;
+        if (f.cfg.mode == fwc::CounterMode::Manual) {
+            double fps = static_cast<double>(f.cfg.refFps);
+            for (auto const& mk : fwc::MarkerStore::get().markers()) {
+                double df = fwc::resolveDisplayFrames(mk.frames, f.cfg.cbfMode);
+                knownTotal += fwc::clickPrecisionWeight(fwc::framesToMs(df, fps));
+            }
         }
-        f.overlay->setPlannedTotalPrecision(total);
+        if (knownTotal <= 0.05) {
+            knownTotal = fwc::LevelDifficultyStore::get().getTotal(f.levelKey);
+        }
+        f.overlay->setKnownTotalDifficulty(knownTotal);
     }
 
     void ensureObjectsIndexed() {
@@ -220,6 +264,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         if (!m_objects || m_objects->count() == 0) return;
 
         f.spatialCache.clear();
+        f.hazardXSorted.clear();
         f.spatialCache.reserve(m_objects->count() / 2);
 
         for (auto* obj : CCArrayExt<GameObject*>(m_objects)) {
@@ -269,11 +314,16 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 s.slopeType = computeSlopeType(obj);
             }
             f.spatialCache.push_back(s);
+
+            if (kind == fwc::sim::ObjKind::Hazard || fwc::sim::isOrbKind(kind)) {
+                f.hazardXSorted.push_back(r.getMidX());
+            }
         }
 
         std::sort(f.spatialCache.begin(), f.spatialCache.end(), [](fwc::sim::SpatialObj const& a, fwc::sim::SpatialObj const& b) {
             return a.minX < b.minX;
         });
+        std::sort(f.hazardXSorted.begin(), f.hazardXSorted.end());
         f.objectsIndexed = true;
     }
 
@@ -293,7 +343,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
     }
 
-    double computeAutoWindowFrames(PlayerObject* player, bool isPress) {
+    double computeAutoWindowFrames(PlayerObject* player, bool isPress, bool forceOnGround = false) {
         auto& f = *m_fields.self();
         ensureObjectsIndexed();
         if (!player) return -1.0;
@@ -314,7 +364,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         p.isBall = player->m_isBall;
         p.isUfo = player->m_isBird;
         p.isSpider = player->m_isSpider;
-        p.onGround = player->m_isOnGround;
+        p.onGround = forceOnGround ? true : player->m_isOnGround;
         p.isPress = isPress;
 
         std::vector<fwc::sim::SpatialObj> local;
@@ -323,7 +373,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         return fwc::sim::solveAutoWindowFrames(p, local, static_cast<double>(f.cfg.refFps));
     }
 
-    void triggerFeedbackAt(CCPoint pos, double frames, std::string const& manualComment) {
+    void triggerFeedbackAt(CCPoint pos, double frames, std::string const& manualComment, double hazardFrac) {
         auto& f = *m_fields.self();
         if (!f.cfg.enabled || f.isScanning || f.isDeadThisAttempt) return;
         if (m_player1 && m_player1->m_isDead) return;
@@ -335,10 +385,10 @@ class $modify(FWCPlayLayer, PlayLayer) {
         double liveCps = static_cast<double>(f.recentClicks.size());
 
         if (f.overlay) {
-            f.overlay->onClickTriggered(m_objectLayer, pos, frames, manualComment, f.simTime, liveCps);
+            f.overlay->onClickTriggered(m_objectLayer, pos, frames, manualComment, f.simTime, liveCps, hazardFrac);
         }
 
-        if (f.cfg.soundEnabled) {
+        if (f.cfg.soundEnabled && !f.isRendering) {
             double fps = static_cast<double>(f.cfg.refFps);
             double displayFrames = fwc::resolveDisplayFrames(frames, f.cfg.cbfMode);
             auto tiers = fwc::buildTiers(f.cfg.tableStyle, fps);
@@ -370,7 +420,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
     }
 
-    void handleResolvedClick(PlayerObject* player, bool down, bool isPlayer1, bool fromHook) {
+    void handleResolvedClick(PlayerObject* player, bool down, bool isPlayer1, bool fromHook, bool forceOnGround = false) {
         auto& f = *m_fields.self();
         if (!f.cfg.enabled || f.isScanning || f.isDeadThisAttempt) return;
         if (!player) player = isPlayer1 ? m_player1 : m_player2;
@@ -383,13 +433,15 @@ class $modify(FWCPlayLayer, PlayLayer) {
             f.lastHookTick[pIdx][dIdx] = f.updateTick;
             f.prevHolding[pIdx] = down;
         } else {
-            if (f.lastHookTick[pIdx][dIdx] == f.updateTick) return;
+            // Skip if handleButton ALREADY caught this click on this or previous tick!
+            if (f.updateTick <= f.lastHookTick[pIdx][dIdx] + 2) return;
+            f.lastHookTick[pIdx][dIdx] = f.updateTick;
         }
 
         recordInputForScan(player, down, isPlayer1);
 
         if (f.cfg.mode == fwc::CounterMode::Auto || f.cfg.captureToManual) {
-            double estFrames = computeAutoWindowFrames(player, down);
+            double estFrames = computeAutoWindowFrames(player, down, forceOnGround);
             if (estFrames < 0.0) return;
 
             auto pos = player->getPosition();
@@ -398,11 +450,290 @@ class $modify(FWCPlayLayer, PlayLayer) {
             }
 
             if (f.cfg.mode == fwc::CounterMode::Auto) {
-                f.pendingClicks.push_back({ pos, estFrames, 2 });
+                double hf = hazardFractionAt(pos.x);
+                if (f.isRendering) {
+                    // During render, defer 1 frame (clean & exact)
+                    f.pendingClicks.push_back({ pos, estFrames, hf, 1 });
+                } else {
+                    f.pendingClicks.push_back({ pos, estFrames, hf, 2 });
+                }
             }
         }
     }
 
+    // Universal Physics-Edge Fallback Detector: catches clicks from ANY bot/renderer even if it bypasses handleButton!
+    void detectPhysicsFallbackClicks(PlayerObject* p, bool isP1) {
+        if (!p || p->m_isDead) return;
+        auto& f = *m_fields.self();
+        int idx = isP1 ? 0 : 1;
+        auto& snap = f.physSnap[idx];
+
+        CCPoint pos = p->getPosition();
+        float curVy = static_cast<float>(p->m_yVelocity);
+        bool curGround = p->m_isOnGround;
+        bool curUp = p->m_isUpsideDown;
+        bool curWave = p->m_isDart;
+        float curDy = snap.valid ? (pos.y - snap.y) : 0.0f;
+        float gravSign = curUp ? -1.0f : 1.0f;
+
+        if (snap.valid && (pos.x - snap.x) > 0.05f && (pos.x - snap.x) < 40.0f) {
+            // 1) Hold-button state fallback (when binding supports m_holdingButtons)
+            bool curHold = isPlayerHoldingJump(p);
+            if (curHold != f.prevHolding[idx]) {
+                f.prevHolding[idx] = curHold;
+                handleResolvedClick(p, curHold, isP1, false);
+            }
+
+            // 2) Pure physics impulse fallback (works even if bot bypasses handleButton AND m_holdingButtons!)
+            if (curWave && snap.isWave && curUp == snap.upsideDown) {
+                if (snap.prevDy * gravSign < -0.25f && curDy * gravSign > 0.25f) {
+                    handleResolvedClick(p, true, isP1, false);
+                } else if (snap.prevDy * gravSign > 0.25f && curDy * gravSign < -0.25f) {
+                    handleResolvedClick(p, false, isP1, false);
+                }
+            } else if (p->m_isBall || p->m_isSpider) {
+                if (curUp != snap.upsideDown && snap.onGround) {
+                    handleResolvedClick(p, true, isP1, false, true);
+                }
+            } else if (!curWave && !p->m_isShip && !p->m_isSwing) {
+                if (snap.onGround && !curGround && (curVy * gravSign > 5.0f)) {
+                    handleResolvedClick(p, true, isP1, false, true);
+                } else if (!snap.onGround && ((curVy - snap.vy) * gravSign > 5.2f)) {
+                    handleResolvedClick(p, true, isP1, false, false);
+                }
+            }
+        }
+
+        snap.valid = true;
+        snap.x = pos.x;
+        snap.y = pos.y;
+        snap.vy = curVy;
+        snap.prevDy = curDy;
+        snap.onGround = curGround;
+        snap.upsideDown = curUp;
+        snap.isWave = curWave;
+    }
+
+    // Unified per-frame simulation & overlay step (runs safely from update OR postUpdate without ever double-running!)
+    void runFramePostStep(float dt) {
+        auto& f = *m_fields.self();
+        if (!f.cfg.enabled || f.isScanning || dt <= 0.0f) return;
+        if (f.lastPostStepTick == f.updateTick) return;
+        f.lastPostStepTick = f.updateTick;
+
+        if (!f.objectsIndexed) {
+            ensureObjectsIndexed();
+        }
+
+        float curX = 0.0f;
+        if (m_player1) {
+            if (m_player1->m_isDead) {
+                f.isDeadThisAttempt = true;
+                f.pendingClicks.clear();
+            }
+
+            curX = m_player1->getPositionX();
+            float dx = curX - f.prevPlayerX;
+
+            if (curX < 45.0f && f.prevPlayerX > 85.0f) {
+                performNormalReset(false);
+                f.prevPlayerX = curX;
+                return;
+            }
+
+            if (dx < -15.0f) {
+                f.isDeadThisAttempt = false;
+                f.pendingClicks.clear();
+                f.physSnap[0].valid = false;
+                f.physSnap[1].valid = false;
+                f.prevHolding[0] = isPlayerHoldingJump(m_player1);
+                f.prevHolding[1] = isPlayerHoldingJump(m_player2);
+                fwc::MarkerStore::get().resetTriggersAfter(curX);
+                if (f.overlay) {
+                    f.overlay->pruneCirclesAfter(curX);
+                }
+            } else if (dx > 0.01f && !f.isDeadThisAttempt) {
+                f.simTime += static_cast<double>(dt);
+                if (dt > 1e-6f) {
+                    float instSpeed = dx / dt;
+                    if (instSpeed > 80.0f && instSpeed < 1600.0f) {
+                        f.measuredSpeedX = f.measuredSpeedX * 0.85f + instSpeed * 0.15f;
+                    }
+                }
+            }
+            f.prevPlayerX = curX;
+
+            if (!f.isDeadThisAttempt && !m_player1->m_isDead) {
+                // Flush confirmed non-fatal Auto clicks
+                for (size_t k = 0; k < f.pendingClicks.size(); ) {
+                    f.pendingClicks[k].ticksLeft--;
+                    if (f.pendingClicks[k].ticksLeft <= 0) {
+                        auto pc = f.pendingClicks[k];
+                        f.pendingClicks.erase(f.pendingClicks.begin() + static_cast<ptrdiff_t>(k));
+                        triggerFeedbackAt(pc.pos, pc.frames, "", pc.hazardFrac);
+                    } else {
+                        ++k;
+                    }
+                }
+
+                // Universal bot/renderer click fallback (catches Silicate/xdBot/Eclipse even during render!)
+                detectPhysicsFallbackClicks(m_player1, true);
+                if (m_player2 && m_player2->isVisible()) {
+                    detectPhysicsFallbackClicks(m_player2, false);
+                }
+
+                // Trigger Manual markers & manual comments
+                auto& markers = fwc::MarkerStore::get().markers();
+                for (auto& mk : markers) {
+                    if (!mk.triggered && curX >= mk.x) {
+                        mk.triggered = true;
+                        if (f.cfg.mode == fwc::CounterMode::Manual) {
+                            triggerFeedbackAt(m_player1->getPosition(), mk.frames, mk.comment, hazardFractionAt(mk.x));
+                        } else if (!mk.comment.empty() && f.overlay) {
+                            auto tiers = fwc::buildTiers(f.cfg.tableStyle, static_cast<double>(f.cfg.refFps));
+                            int ti = fwc::findTierIndex(tiers, fwc::resolveDisplayFrames(mk.frames, f.cfg.cbfMode));
+                            f.overlay->showCallout(mk.comment, tiers[static_cast<size_t>(ti)].color);
+                        }
+                    }
+                }
+
+                // Save exact level Total Difficulty upon level completion so next runs hit exact 100.00%!
+                if (!f.completedSavedThisAttempt && safeHasCompleted(this)) {
+                    f.completedSavedThisAttempt = true;
+                    if (f.overlay) {
+                        double totalDiff = f.overlay->currentRawPrecision();
+                        if (totalDiff > 0.1) {
+                            fwc::LevelDifficultyStore::get().setTotal(f.levelKey, totalDiff);
+                            f.overlay->setKnownTotalDifficulty(totalDiff);
+                        }
+                        f.overlay->markLevelCompleted();
+                    }
+                }
+            }
+        }
+
+        if (f.overlay) {
+            f.overlay->ensureWorldContainer(m_objectLayer);
+            f.overlay->stepSimulation(dt, curX);
+        }
+    }
+
+    // =========================================================================
+    // BUILT-IN LIGHTWEIGHT FFMPEG SHOWCASE RENDERER
+    // =========================================================================
+    void toggleInternalRender() {
+        auto& f = *m_fields.self();
+        if (f.isRendering) {
+            stopInternalRender(true);
+            return;
+        }
+        if (f.isScanning) {
+            finishOrCancelScan(false);
+        }
+
+        f.cfg = fwc::ModConfig::load();
+        auto& ren = fwc::InternalRenderer::get();
+        if (!ren.start(f.levelName, f.cfg)) {
+            FLAlertLayer::create(
+                "Render Start Failed",
+                ren.lastError().c_str(),
+                "OK"
+            )->show();
+            return;
+        }
+
+        f.isRendering = true;
+        f.outroFramesLeft = 0;
+
+        // Clean restart from Frame 0 with Intro Freeze ready!
+        safeResetFromStart(this);
+        if (f.overlay) {
+            f.overlay->resetAttempt(m_objectLayer, true);
+            f.overlay->setStatusBanner(true, "RENDERING: 0 FRAMES", "Fixed-FPS Bot-Safe Render  |  Press ESC to finish");
+        }
+    }
+
+    void stopInternalRender(bool showPopup) {
+        auto& f = *m_fields.self();
+        if (!f.isRendering) return;
+
+        auto& ren = fwc::InternalRenderer::get();
+        int frames = ren.framesWritten();
+        std::string outPath = ren.outputPath();
+        std::string err = ren.lastError();
+        ren.stop();
+
+        f.isRendering = false;
+        f.outroFramesLeft = 0;
+
+        if (f.overlay) {
+            f.overlay->setStatusBanner(false, "", "");
+        }
+
+        if (showPopup) {
+            if (!err.empty()) {
+                FLAlertLayer::create("Render Stopped", err.c_str(), "OK")->show();
+            } else {
+                FLAlertLayer::create(
+                    "Render Complete!",
+                    fmt::format("Saved <cg>{}</c> frames to:\n<cy>{}</c>", frames, outPath).c_str(),
+                    "OK"
+                )->show();
+            }
+        }
+    }
+
+    void stepBuiltInRenderFrame(std::function<void(float)> const& runBaseUpdate) {
+        auto& f = *m_fields.self();
+        auto& ren = fwc::InternalRenderer::get();
+        if (!f.isRendering || !ren.isActive()) {
+            f.isRendering = false;
+            return;
+        }
+
+        float fixedDt = 1.0f / static_cast<float>(std::max(24, ren.fps()));
+
+        if (isIntroFreezing()) {
+            // Frame 0 frozen while Intro splash plays and fades cleanly into the MP4!
+            if (f.overlay) f.overlay->stepIntroOnly(fixedDt);
+        } else {
+            runBaseUpdate(fixedDt);
+            runFramePostStep(fixedDt);
+            f.updateTick++;
+        }
+
+        // Hide the live status banner ONLY during the FBO capture so the MP4 stays 100% clean!
+        if (f.overlay) f.overlay->setStatusBannerTemporaryHidden(true);
+        bool ok = ren.captureFrame(this);
+        if (f.overlay) {
+            f.overlay->setStatusBanner(
+                true,
+                fmt::format("RENDERING: {}F ({:.1f}s)", ren.framesWritten(), static_cast<double>(ren.framesWritten()) / ren.fps()),
+                "Fixed-FPS Bot-Safe Render  |  Press ESC to stop & save"
+            );
+        }
+
+        if (!ok) {
+            stopInternalRender(true);
+            return;
+        }
+
+        // Auto-stop ~1 second after level completion!
+        if (safeHasCompleted(this)) {
+            if (f.outroFramesLeft == 0) {
+                f.outroFramesLeft = ren.fps();
+            } else {
+                f.outroFramesLeft--;
+                if (f.outroFramesLeft <= 0) {
+                    stopInternalRender(true);
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // DIRECT-ENGINE PATHFINDER SCANNER (Scan Exact)
+    // =========================================================================
     void resetProbeState(std::function<void(bool, int, bool)> const& runBaseBtn) {
         auto& f = *m_fields.self();
         runBaseBtn(false, 1, true);
@@ -425,6 +756,8 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
     void startExactScan() {
         auto& f = *m_fields.self();
+        if (f.isRendering) stopInternalRender(false);
+
         auto const& source = (f.currentRun.size() >= f.savedRun.size() && !f.currentRun.empty())
             ? f.currentRun : f.savedRun;
         if (source.empty()) return;
@@ -455,7 +788,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
         if (f.overlay) {
             f.overlay->clearCircles();
-            f.overlay->setScanStatus(true, fmt::format("SCANNING 1 / {}...", f.scanClicks.size()));
+            f.overlay->setStatusBanner(true, fmt::format("SCANNING 1 / {}...", f.scanClicks.size()), "Exact GD Engine Probing  |  Press ESC to cancel");
         }
 
         safeResetFromStart(this);
@@ -475,13 +808,13 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
 
         if (f.overlay) {
-            f.overlay->setScanStatus(false, "");
+            f.overlay->setStatusBanner(false, "", "");
         }
 
         if (completed && f.totalSolved > 0) {
             f.cfg.mode = fwc::CounterMode::Manual;
             f.cfg.save();
-            syncPlannedPrecisionToOverlay();
+            syncKnownTotalDifficultyToOverlay();
             if (f.overlay) {
                 f.overlay->reloadConfig(m_objectLayer);
             }
@@ -644,7 +977,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                         f.scanClickIdx++;
                         f.scanPhase = ScanPhase::ApproachCheckpoint;
                         if (f.overlay && f.scanClickIdx < f.scanClicks.size()) {
-                            f.overlay->setScanStatus(true, fmt::format("SCANNING {} / {}...", f.scanClickIdx + 1, f.scanClicks.size()));
+                            f.overlay->setStatusBanner(true, fmt::format("SCANNING {} / {}...", f.scanClickIdx + 1, f.scanClicks.size()), "Exact GD Engine Probing  |  Press ESC to cancel");
                         }
                         resetProbeState(runBaseBtn);
                     } else {
@@ -712,7 +1045,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                     return;
                 }
                 if (f.overlay) {
-                    f.overlay->setScanStatus(true, fmt::format("SCANNING {} / {}...", f.scanClickIdx + 1, f.scanClicks.size()));
+                    f.overlay->setStatusBanner(true, fmt::format("SCANNING {} / {}...", f.scanClickIdx + 1, f.scanClicks.size()), "Exact GD Engine Probing  |  Press ESC to cancel");
                 }
                 f.scanPhase = ScanPhase::ApproachCheckpoint;
                 resetProbeState(runBaseBtn);
@@ -723,7 +1056,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
     void reloadFromSettings() {
         auto& f = *m_fields.self();
         f.cfg = fwc::ModConfig::load();
-        syncPlannedPrecisionToOverlay();
+        syncKnownTotalDifficultyToOverlay();
         if (f.overlay) {
             f.overlay->reloadConfig(m_objectLayer);
         }
@@ -745,9 +1078,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
 
         if (f.isScanning) {
-            if (!isAnticheat) {
-                f.scanProbeDied = true;
-            }
+            if (!isAnticheat) f.scanProbeDied = true;
             return;
         }
 
@@ -767,26 +1098,38 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
         auto& f = *m_fields.self();
         f.cfg = fwc::ModConfig::load();
+        f.levelName = level ? std::string(level->m_levelName) : "LEVEL";
+        f.levelKey = fwc::MarkerStore::buildLevelKey(level);
         f.simTime = 0.0;
         f.updateTick = 1;
+        f.lastPostStepTick = 0;
         f.objectsIndexed = false;
         f.isScanning = false;
+        f.isRendering = false;
         f.isDeadThisAttempt = false;
+        f.completedSavedThisAttempt = false;
         f.prevPlayerX = m_player1 ? m_player1->getPositionX() : 0.0f;
         f.prevHolding[0] = isPlayerHoldingJump(m_player1);
         f.prevHolding[1] = isPlayerHoldingJump(m_player2);
 
         (void)fwc::AudioManager::get().getCustomSoundsDir();
+        (void)fwc::InternalRenderer::get().getRendersDir();
         fwc::TierSoundStore::get().ensureLoaded();
         fwc::MarkerStore::get().loadForLevel(level);
 
-        std::string levelName = level ? std::string(level->m_levelName) : "LEVEL";
-        f.overlay = fwc::HudOverlay::create(levelName, m_objectLayer);
+        f.overlay = fwc::HudOverlay::create(f.levelName, m_objectLayer);
         if (f.overlay) {
             this->addChild(f.overlay, 100);
-            syncPlannedPrecisionToOverlay();
+            syncKnownTotalDifficultyToOverlay();
         }
         return true;
+    }
+
+    void onQuit() {
+        if (m_fields->isRendering) {
+            stopInternalRender(false);
+        }
+        PlayLayer::onQuit();
     }
 
     void setupHasCompleted() {
@@ -799,7 +1142,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
     }
 
-    void performNormalReset() {
+    void performNormalReset(bool forceIntro) {
         auto& f = *m_fields.self();
         if (f.currentRun.size() >= f.savedRun.size() && !f.currentRun.empty()) {
             f.savedRun = f.currentRun;
@@ -807,11 +1150,14 @@ class $modify(FWCPlayLayer, PlayLayer) {
         f.currentRun.clear();
         f.pendingClicks.clear();
         f.recentClicks.clear();
+        f.physSnap[0].valid = false;
+        f.physSnap[1].valid = false;
 
         f.cfg = fwc::ModConfig::load();
         f.simTime = 0.0;
         f.updateTick++;
         f.isDeadThisAttempt = false;
+        f.completedSavedThisAttempt = false;
         f.prevPlayerX = m_player1 ? m_player1->getPositionX() : 0.0f;
         f.prevHolding[0] = false;
         f.prevHolding[1] = false;
@@ -820,10 +1166,10 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
         ensureObjectsIndexed();
         fwc::MarkerStore::get().resetTriggers();
-        syncPlannedPrecisionToOverlay();
+        syncKnownTotalDifficultyToOverlay();
 
         if (f.overlay) {
-            f.overlay->resetAttempt(m_objectLayer);
+            f.overlay->resetAttempt(m_objectLayer, forceIntro);
         }
     }
 
@@ -833,120 +1179,28 @@ class $modify(FWCPlayLayer, PlayLayer) {
             m_fields->scanProbeDied = false;
             return;
         }
-        performNormalReset();
+        performNormalReset(m_fields->isRendering);
     }
 
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
-
-        auto& f = *m_fields.self();
-        if (!f.cfg.enabled || f.isScanning || dt <= 0.0f) return;
-
-        if (!f.objectsIndexed) {
-            ensureObjectsIndexed();
-        }
-
-        float curX = 0.0f;
-        if (m_player1) {
-            if (m_player1->m_isDead) {
-                f.isDeadThisAttempt = true;
-                f.pendingClicks.clear();
-            }
-
-            curX = m_player1->getPositionX();
-            float dx = curX - f.prevPlayerX;
-
-            if (curX < 45.0f && f.prevPlayerX > 85.0f) {
-                performNormalReset();
-                f.prevPlayerX = curX;
-                return;
-            }
-
-            if (dx < -15.0f) {
-                f.isDeadThisAttempt = false;
-                f.pendingClicks.clear();
-                f.prevHolding[0] = isPlayerHoldingJump(m_player1);
-                f.prevHolding[1] = isPlayerHoldingJump(m_player2);
-                fwc::MarkerStore::get().resetTriggersAfter(curX);
-                if (f.overlay) {
-                    f.overlay->pruneCirclesAfter(curX);
-                }
-            } else if (dx > 0.01f && !f.isDeadThisAttempt) {
-                f.simTime += static_cast<double>(dt);
-                if (dt > 1e-6f) {
-                    float instSpeed = dx / dt;
-                    if (instSpeed > 80.0f && instSpeed < 1600.0f) {
-                        f.measuredSpeedX = f.measuredSpeedX * 0.85f + instSpeed * 0.15f;
-                    }
-                }
-            }
-            f.prevPlayerX = curX;
-
-            if (!f.isDeadThisAttempt && !m_player1->m_isDead) {
-                for (size_t k = 0; k < f.pendingClicks.size(); ) {
-                    f.pendingClicks[k].ticksLeft--;
-                    if (f.pendingClicks[k].ticksLeft <= 0) {
-                        auto pc = f.pendingClicks[k];
-                        f.pendingClicks.erase(f.pendingClicks.begin() + static_cast<ptrdiff_t>(k));
-                        triggerFeedbackAt(pc.pos, pc.frames, "");
-                    } else {
-                        ++k;
-                    }
-                }
-
-                if (f.overlay) {
-                    float len = safeGetLevelLength(this);
-                    double pct = safeHasCompleted(this) ? 100.0 : (static_cast<double>(curX) * 100.0 / static_cast<double>(len));
-                    f.overlay->setLevelProgress(pct);
-                }
-
-                auto checkPlayerHoldEdge = [&](PlayerObject* p, bool isP1) {
-                    if (!p) return;
-                    int pIdx = isP1 ? 0 : 1;
-                    bool curHold = isPlayerHoldingJump(p);
-                    if (curHold != f.prevHolding[pIdx]) {
-                        f.prevHolding[pIdx] = curHold;
-                        handleResolvedClick(p, curHold, isP1, false);
-                    }
-                };
-                checkPlayerHoldEdge(m_player1, true);
-                if (m_player2 && m_player2->isVisible()) {
-                    checkPlayerHoldEdge(m_player2, false);
-                }
-
-                auto& markers = fwc::MarkerStore::get().markers();
-                for (auto& mk : markers) {
-                    if (!mk.triggered && curX >= mk.x) {
-                        mk.triggered = true;
-                        if (f.cfg.mode == fwc::CounterMode::Manual) {
-                            triggerFeedbackAt(m_player1->getPosition(), mk.frames, mk.comment);
-                        } else if (!mk.comment.empty() && f.overlay) {
-                            auto tiers = fwc::buildTiers(f.cfg.tableStyle, static_cast<double>(f.cfg.refFps));
-                            int ti = fwc::findTierIndex(tiers, fwc::resolveDisplayFrames(mk.frames, f.cfg.cbfMode));
-                            f.overlay->showCallout(mk.comment, tiers[static_cast<size_t>(ti)].color);
-                        }
-                    }
-                }
-            }
-        }
-
-        if (f.overlay) {
-            f.overlay->ensureWorldContainer(m_objectLayer);
-            f.overlay->stepSimulation(dt, curX);
-        }
-
-        f.updateTick++;
+        if (m_fields->isScanning || m_fields->isRendering) return;
+        runFramePostStep(dt);
     }
 };
 
 class $modify(FWCGJBaseGameLayer, GJBaseGameLayer) {
     static void onModify(auto& self) {
+        // High priority (-50000) on update so Intro Freeze & Built-in Render run BEFORE bots (Silicate/xdBot/Eclipse)!
+        (void)self.setHookPriority("GJBaseGameLayer::update", -50000);
+        // Late priority (10000) on handleButton to receive clicks injected by bots!
         (void)self.setHookPriority("GJBaseGameLayer::handleButton", 10000);
     }
 
     void update(float dt) {
         if (auto* pl = typeinfo_cast<PlayLayer*>(this)) {
             auto* fwcPl = static_cast<FWCPlayLayer*>(pl);
+
             if (fwcPl->isScanning()) {
                 fwcPl->stepScannerTick(
                     [this](float stepDt) { GJBaseGameLayer::update(stepDt); },
@@ -954,6 +1208,25 @@ class $modify(FWCGJBaseGameLayer, GJBaseGameLayer) {
                 );
                 return;
             }
+
+            if (fwcPl->isRendering()) {
+                fwcPl->stepBuiltInRenderFrame([this](float stepDt) {
+                    GJBaseGameLayer::update(stepDt);
+                });
+                return;
+            }
+
+            // Intro Frame-0 Freeze: holds physics & bots completely frozen at Frame 0 until Intro finishes!
+            if (fwcPl->isIntroFreezing()) {
+                fwcPl->stepIntroFreeze(dt);
+                return;
+            }
+
+            GJBaseGameLayer::update(dt);
+            // Also guarantee post-step runs even if an external renderer bypasses PlayLayer::postUpdate!
+            fwcPl->runFramePostStep(dt);
+            fwcPl->bumpUpdateTick();
+            return;
         }
         GJBaseGameLayer::update(dt);
     }
@@ -961,7 +1234,7 @@ class $modify(FWCGJBaseGameLayer, GJBaseGameLayer) {
     void handleButton(bool down, int button, bool isPlayer1) {
         if (auto* pl = typeinfo_cast<PlayLayer*>(this)) {
             auto* fwcPl = static_cast<FWCPlayLayer*>(pl);
-            if (fwcPl->isScanning()) {
+            if (fwcPl->isScanning() || fwcPl->isIntroFreezing()) {
                 return;
             }
             if (button == 1) {
@@ -979,10 +1252,12 @@ class $modify(FWCPauseLayer, PauseLayer) {
         auto* pl = PlayLayer::get();
         CCPoint pos = ccp(0.0f, 30.0f);
         size_t recCount = 0;
+        bool renderingNow = false;
         if (pl) {
             auto* fwcPl = static_cast<FWCPlayLayer*>(pl);
             pos = fwcPl->getCurrentPlayerPosSafe();
             recCount = fwcPl->getRecordedClickCount();
+            renderingNow = fwcPl->isRendering();
         }
 
         Ref<PauseLayer> pauseRef = this;
@@ -1000,7 +1275,18 @@ class $modify(FWCPauseLayer, PauseLayer) {
                     pauseRef->onResume(nullptr);
                 }
             },
+            [pauseRef]() {
+                if (auto* activePl = PlayLayer::get()) {
+                    auto* fwcPl = static_cast<FWCPlayLayer*>(activePl);
+                    bool wasRendering = fwcPl->isRendering();
+                    fwcPl->toggleInternalRender();
+                    if (!wasRendering && fwcPl->isRendering() && pauseRef && pauseRef->getParent()) {
+                        pauseRef->onResume(nullptr);
+                    }
+                }
+            },
             recCount,
+            renderingNow,
             pos.x,
             pos.y
         );
@@ -1033,6 +1319,9 @@ class $modify(FWCPauseLayer, PauseLayer) {
             auto* fwcPl = static_cast<FWCPlayLayer*>(pl);
             if (fwcPl->isScanning()) {
                 fwcPl->finishOrCancelScan(false);
+            }
+            if (fwcPl->isRendering()) {
+                fwcPl->stopInternalRender(true);
             }
         }
 

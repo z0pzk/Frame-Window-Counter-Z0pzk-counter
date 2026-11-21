@@ -47,8 +47,9 @@ private:
     float m_calloutAge = 999.0f;
     float m_calloutTotal = 2.4f;
 
-    CCNode* m_scanBanner = nullptr;
-    CCLabelBMFont* m_scanStatusLbl = nullptr;
+    CCNode* m_statusBanner = nullptr;
+    CCLabelBMFont* m_statusTitleLbl = nullptr;
+    CCLabelBMFont* m_statusHintLbl = nullptr;
 
     CCNode* m_introRoot = nullptr;
     CCLayerColor* m_introBg = nullptr;
@@ -57,11 +58,12 @@ private:
     bool m_introActive = false;
     bool m_introShownOnce = false;
 
+    // Difficulty % state (NEVER tied linearly to level X%!)
     double m_lastMs = 0.0;
     double m_lastHz = 0.0;
     double m_rawPrecision = 0.0;
-    double m_plannedTotalPrecision = 0.0;
-    double m_levelProgressPct = 0.0;
+    double m_knownTotalDifficulty = 0.0; // From Manual/Scan markers OR previous completed run
+    double m_displayDiffPct = 0.0;       // Only updates when a click occurs (or hits 100% on completion)
 
     double m_lastCalloutTime = -10.0;
 
@@ -85,34 +87,35 @@ private:
         return spr;
     }
 
-    void buildScanBanner() {
-        if (m_scanBanner) {
-            m_scanBanner->removeFromParent();
-            m_scanBanner = nullptr;
-            m_scanStatusLbl = nullptr;
+    void buildStatusBanner() {
+        if (m_statusBanner) {
+            m_statusBanner->removeFromParent();
+            m_statusBanner = nullptr;
+            m_statusTitleLbl = nullptr;
+            m_statusHintLbl = nullptr;
         }
         auto winSize = CCDirector::sharedDirector()->getWinSize();
-        m_scanBanner = CCNode::create();
-        m_scanBanner->setPosition({ winSize.width * 0.5f, winSize.height - 46.0f });
-        m_scanBanner->setVisible(false);
-        this->addChild(m_scanBanner, 50);
+        m_statusBanner = CCNode::create();
+        m_statusBanner->setPosition({ winSize.width * 0.5f, winSize.height - 46.0f });
+        m_statusBanner->setVisible(false);
+        this->addChild(m_statusBanner, 60);
 
         auto* bg = CCScale9Sprite::create("square02_001.png");
-        bg->setOpacity(185);
-        bg->setContentSize({ 296.0f, 34.0f });
-        m_scanBanner->addChild(bg, 0);
+        bg->setOpacity(190);
+        bg->setContentSize({ 308.0f, 34.0f });
+        m_statusBanner->addChild(bg, 0);
 
-        m_scanStatusLbl = CCLabelBMFont::create("SCANNING...", "bigFont.fnt");
-        m_scanStatusLbl->setScale(0.36f);
-        m_scanStatusLbl->setColor(ccc3(120, 245, 165));
-        m_scanStatusLbl->setPosition({ 0.0f, 5.0f });
-        m_scanBanner->addChild(m_scanStatusLbl, 2);
+        m_statusTitleLbl = CCLabelBMFont::create("WORKING...", "bigFont.fnt");
+        m_statusTitleLbl->setScale(0.35f);
+        m_statusTitleLbl->setColor(ccc3(120, 245, 165));
+        m_statusTitleLbl->setPosition({ 0.0f, 5.5f });
+        m_statusBanner->addChild(m_statusTitleLbl, 2);
 
-        auto* hint = CCLabelBMFont::create("Exact GD Engine Probing  |  Press ESC to cancel", "chatFont.fnt");
-        hint->setScale(0.54f);
-        hint->setColor(ccc3(210, 218, 232));
-        hint->setPosition({ 0.0f, -8.5f });
-        m_scanBanner->addChild(hint, 2);
+        m_statusHintLbl = CCLabelBMFont::create("Press ESC to stop", "chatFont.fnt");
+        m_statusHintLbl->setScale(0.54f);
+        m_statusHintLbl->setColor(ccc3(215, 222, 235));
+        m_statusHintLbl->setPosition({ 0.0f, -8.5f });
+        m_statusBanner->addChild(m_statusHintLbl, 2);
     }
 
     void buildLeftHud(bool preserveCounts) {
@@ -238,7 +241,7 @@ private:
         m_tableRoot->addChild(m_lblCallout, 4);
     }
 
-    void buildIntroScreen(bool isReset) {
+    void buildIntroScreen(bool isReset, bool forceShow = false) {
         if (m_introRoot) {
             m_introRoot->removeFromParent();
             m_introRoot = nullptr;
@@ -246,8 +249,13 @@ private:
         m_introLabels.clear();
         m_introActive = false;
 
-        if (!m_cfg.enabled || m_cfg.bannerMode == BannerMode::Off) return;
-        if (m_cfg.bannerMode == BannerMode::FirstOnly && m_introShownOnce && isReset) return;
+        if (!m_cfg.enabled) return;
+        if (!forceShow) {
+            if (m_cfg.bannerMode == BannerMode::Off) return;
+            if (m_cfg.bannerMode == BannerMode::FirstOnly && m_introShownOnce && isReset) return;
+        } else {
+            if (m_cfg.bannerMode == BannerMode::Off) return;
+        }
 
         m_introShownOnce = true;
 
@@ -255,7 +263,8 @@ private:
         m_introRoot = CCNode::create();
         this->addChild(m_introRoot, 40);
 
-        m_introBg = CCLayerColor::create(ccc4(0, 0, 0, 215), winSize.width, winSize.height);
+        // Full black splash screen while Intro Freeze holds Frame 0!
+        m_introBg = CCLayerColor::create(ccc4(0, 0, 0, 238), winSize.width, winSize.height);
         m_introRoot->addChild(m_introBg, 0);
 
         float lx = 26.0f;
@@ -314,11 +323,7 @@ private:
 
     void updateBottomNumbers() {
         if (m_lblPercent) {
-            double pct = m_levelProgressPct;
-            if (m_cfg.mode == CounterMode::Manual && m_plannedTotalPrecision > 1e-4) {
-                pct = (m_rawPrecision / m_plannedTotalPrecision) * 100.0;
-            }
-            m_lblPercent->setString(fmt::format("{:.2f}%", std::clamp(pct, 0.0, 100.0)).c_str());
+            m_lblPercent->setString(fmt::format("{:.2f}%", std::clamp(m_displayDiffPct, 0.0, 100.0)).c_str());
         }
         if (m_lblScore) {
             m_lblScore->setString(fmt::format("{:.2f}", m_rawPrecision).c_str());
@@ -343,7 +348,7 @@ public:
 
         ensureWorldContainer(worldParent);
         buildLeftHud(false);
-        buildScanBanner();
+        buildStatusBanner();
         buildIntroScreen(false);
         return true;
     }
@@ -374,21 +379,36 @@ public:
         m_worldContainer = node;
     }
 
-    void setScanStatus(bool active, std::string const& text) {
-        if (!m_scanBanner) return;
-        m_scanBanner->setVisible(active);
-        if (active && m_scanStatusLbl) {
-            m_scanStatusLbl->setString(text.c_str());
+    bool isIntroFreezing() const {
+        return m_cfg.enabled && m_cfg.introFreeze && m_introActive;
+    }
+
+    double currentRawPrecision() const {
+        return m_rawPrecision;
+    }
+
+    void setStatusBanner(bool active, std::string const& title, std::string const& hint) {
+        if (!m_statusBanner) return;
+        m_statusBanner->setVisible(active);
+        if (active) {
+            if (m_statusTitleLbl) m_statusTitleLbl->setString(title.c_str());
+            if (m_statusHintLbl) m_statusHintLbl->setString(hint.c_str());
         }
     }
 
-    void setPlannedTotalPrecision(double totalScore) {
-        m_plannedTotalPrecision = std::max(0.0, totalScore);
+    void setStatusBannerTemporaryHidden(bool hidden) {
+        if (m_statusBanner) {
+            m_statusBanner->setVisible(!hidden);
+        }
     }
 
-    void setLevelProgress(double pct) {
-        m_levelProgressPct = std::clamp(pct, 0.0, 100.0);
-        if (m_cfg.mode == CounterMode::Auto) {
+    void setKnownTotalDifficulty(double totalScore) {
+        m_knownTotalDifficulty = std::max(0.0, totalScore);
+    }
+
+    void markLevelCompleted() {
+        if (m_rawPrecision > 0.01) {
+            m_displayDiffPct = 100.0;
             updateBottomNumbers();
         }
     }
@@ -399,7 +419,7 @@ public:
         buildLeftHud(true);
     }
 
-    void resetAttempt(CCNode* worldParent) {
+    void resetAttempt(CCNode* worldParent, bool forceShowIntro = false) {
         m_cfg = ModConfig::load();
         ensureWorldContainer(worldParent);
         clearCircles();
@@ -407,7 +427,7 @@ public:
         m_lastMs = 0.0;
         m_lastHz = 0.0;
         m_rawPrecision = 0.0;
-        m_levelProgressPct = 0.0;
+        m_displayDiffPct = 0.0;
         m_lastCalloutTime = -10.0;
         m_calloutAge = 999.0f;
 
@@ -425,7 +445,7 @@ public:
         if (m_lblCallout) m_lblCallout->setOpacity(0);
 
         updateBottomNumbers();
-        buildIntroScreen(true);
+        buildIntroScreen(true, forceShowIntro);
     }
 
     void clearCircles() {
@@ -456,9 +476,22 @@ public:
         m_calloutTotal = std::max(0.6f, m_cfg.commentFadeSec);
     }
 
-    void onClickTriggered(CCNode* worldParent, CCPoint levelPos, double frames, std::string const& manualComment, double simTime, double liveCps) {
+    // hazardFractionPassed is (hazards up to player X) / (total hazards in level) in [0.01 .. 1.0]
+    void onClickTriggered(
+        CCNode* worldParent,
+        CCPoint levelPos,
+        double frames,
+        std::string const& manualComment,
+        double simTime,
+        double liveCps,
+        double hazardFractionPassed
+    ) {
         if (!m_cfg.enabled) return;
         ensureWorldContainer(worldParent);
+
+        // Keep overlay & circles visible even if an external renderer hides other UI
+        this->setVisible(true);
+        if (m_worldContainer) m_worldContainer->setVisible(true);
 
         double fps = static_cast<double>(m_cfg.refFps);
         double displayFrames = resolveDisplayFrames(frames, m_cfg.cbfMode);
@@ -472,7 +505,7 @@ public:
         int tierIdx = findTierIndex(m_tiers, displayFrames);
         auto const& tier = m_tiers[static_cast<size_t>(tierIdx)];
 
-        // 1) Update Tier Row + Bright Additive White Glow centered on the number!
+        // 1) Update Tier Row + Bright Additive White Glow
         if (tierIdx >= 0 && tierIdx < static_cast<int>(m_rows.size())) {
             auto& row = m_rows[static_cast<size_t>(tierIdx)];
             row.count++;
@@ -495,12 +528,25 @@ public:
         if (m_lblMs) m_lblMs->setString(fmt::format("{:.2f}ms", m_lastMs).c_str());
         if (m_lblHz) m_lblHz->setString(fmt::format("{:.0f}Hz", std::min(m_lastHz, 9999.0)).c_str());
 
-        // 3) Update Bottom-Left Raw Precision & Cumulative %
-        m_rawPrecision += clickPrecisionWeight(m_lastMs);
+        // 3) Difficulty-Based % & Raw Precision Score!
+        double clickWeight = clickPrecisionWeight(m_lastMs);
+        m_rawPrecision += clickWeight;
+
+        if (m_knownTotalDifficulty > 0.05) {
+            // Exact share of total level difficulty!
+            m_displayDiffPct = std::clamp((m_rawPrecision / m_knownTotalDifficulty) * 100.0, 0.0, 100.0);
+        } else {
+            // First-ever attempt (not completed yet): estimate remaining difficulty from remaining hazard share!
+            double hFrac = std::clamp(hazardFractionPassed, 0.02, 1.0);
+            double estRemaining = (1.0 - hFrac) * std::max(m_rawPrecision / hFrac, 35.0);
+            double estTotal = m_rawPrecision + estRemaining;
+            double estPct = (estTotal > 1e-4) ? ((m_rawPrecision / estTotal) * 100.0) : 0.0;
+            // Monotonic rise purely on clicks (jumps big on tight 1F clicks, tiny on easy clicks!)
+            m_displayDiffPct = std::clamp(std::max(m_displayDiffPct, estPct), 0.0, 99.95);
+        }
         updateBottomNumbers();
 
-        // 4) Comments: Manual comments + clean non-numbered Auto Comments (NO "1ST/2ND/3RD 240HZ FP" spam!)
-        // Evaluated on rawMs so switching tier styles (0-1 vs 1/2/3) NEVER changes which clicks trigger comments!
+        // 4) Comments (Manual + clean non-numbered Auto Comments)
         if (!manualComment.empty()) {
             showCallout(manualComment, tier.color);
             m_lastCalloutTime = simTime;
@@ -561,6 +607,25 @@ public:
         }
 
         m_circles.push_back(wc);
+    }
+
+    // Advance ONLY the Intro screen timer & fade (used while game is frozen on Frame 0!)
+    void stepIntroOnly(float dt) {
+        if (!m_introActive || !m_introRoot || dt <= 0.0f) return;
+        m_introTimer += dt;
+        float holdEnd = std::max(0.4f, m_cfg.bannerDuration);
+        float fadeDur = 0.55f;
+        if (m_introTimer >= holdEnd + fadeDur) {
+            m_introRoot->setVisible(false);
+            m_introActive = false;
+        } else if (m_introTimer > holdEnd) {
+            float p = 1.0f - std::clamp((m_introTimer - holdEnd) / fadeDur, 0.0f, 1.0f);
+            if (m_introBg) m_introBg->setOpacity(static_cast<GLubyte>(p * 238.0f));
+            GLubyte lblOp = static_cast<GLubyte>(p * 255.0f);
+            for (auto* l : m_introLabels) {
+                if (l) l->setOpacity(lblOp);
+            }
+        }
     }
 
     void stepSimulation(float dt, float currentPlayerX) {
@@ -631,21 +696,9 @@ public:
             ++i;
         }
 
-        if (m_introActive && m_introRoot) {
-            m_introTimer += dt;
-            float holdEnd = std::max(0.4f, m_cfg.bannerDuration);
-            float fadeDur = 0.55f;
-            if (m_introTimer >= holdEnd + fadeDur) {
-                m_introRoot->setVisible(false);
-                m_introActive = false;
-            } else if (m_introTimer > holdEnd) {
-                float p = 1.0f - std::clamp((m_introTimer - holdEnd) / fadeDur, 0.0f, 1.0f);
-                if (m_introBg) m_introBg->setOpacity(static_cast<GLubyte>(p * 215.0f));
-                GLubyte lblOp = static_cast<GLubyte>(p * 255.0f);
-                for (auto* l : m_introLabels) {
-                    if (l) l->setOpacity(lblOp);
-                }
-            }
+        // If Intro Freeze is OFF, still fade the intro normally during gameplay
+        if (!m_cfg.introFreeze && m_introActive) {
+            stepIntroOnly(dt);
         }
     }
 };

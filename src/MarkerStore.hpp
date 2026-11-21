@@ -65,6 +65,7 @@ public:
         return fmt::format("local_{}", name);
     }
 
+    std::string const& currentKey() const { return m_currentKey; }
     std::vector<ManualMarker>& markers() { return m_markers; }
     std::vector<ManualMarker> const& markers() const { return m_markers; }
 

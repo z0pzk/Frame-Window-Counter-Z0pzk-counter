@@ -62,7 +62,8 @@ struct ModConfig {
     float commentFadeSec = 2.4f;
 
     BannerMode bannerMode = BannerMode::FirstOnly;
-    float bannerDuration = 2.8f;
+    bool introFreeze = true;
+    float bannerDuration = 2.6f;
     std::string bannerComment = "";
     std::string rawPrecisionText = "";
 
@@ -74,6 +75,10 @@ struct ModConfig {
     bool dynamicPitch = true;
 
     bool captureToManual = false;
+
+    int64_t renderFps = 60;
+    std::string renderRes = "720p";
+    std::string renderBitrate = "12M";
 
     static ModConfig load() {
         auto* mod = Mod::get();
@@ -108,6 +113,7 @@ struct ModConfig {
         else if (bm == "always") cfg.bannerMode = BannerMode::Always;
         else cfg.bannerMode = BannerMode::FirstOnly;
 
+        cfg.introFreeze = mod->getSettingValue<bool>("intro-freeze");
         cfg.bannerDuration = static_cast<float>(mod->getSettingValue<double>("banner-duration"));
         cfg.bannerComment = mod->getSettingValue<std::string>("banner-comment");
         cfg.rawPrecisionText = mod->getSettingValue<std::string>("raw-precision-text");
@@ -120,6 +126,10 @@ struct ModConfig {
         cfg.dynamicPitch = mod->getSettingValue<bool>("dynamic-pitch");
 
         cfg.captureToManual = mod->getSettingValue<bool>("capture-to-manual");
+
+        cfg.renderFps = std::clamp<int64_t>(mod->getSettingValue<int64_t>("render-fps"), 24, 120);
+        cfg.renderRes = mod->getSettingValue<std::string>("render-res");
+        cfg.renderBitrate = mod->getSettingValue<std::string>("render-bitrate");
         return cfg;
     }
 
@@ -155,6 +165,7 @@ struct ModConfig {
         else if (bannerMode == BannerMode::Always) bm = "always";
         mod->setSettingValue<std::string>("banner-mode", bm);
 
+        mod->setSettingValue<bool>("intro-freeze", introFreeze);
         mod->setSettingValue<double>("banner-duration", std::clamp(static_cast<double>(bannerDuration), 0.8, 8.0));
         mod->setSettingValue<std::string>("banner-comment", bannerComment);
         mod->setSettingValue<std::string>("raw-precision-text", rawPrecisionText);
@@ -167,10 +178,13 @@ struct ModConfig {
         mod->setSettingValue<bool>("dynamic-pitch", dynamicPitch);
 
         mod->setSettingValue<bool>("capture-to-manual", captureToManual);
+
+        mod->setSettingValue<int64_t>("render-fps", std::clamp<int64_t>(renderFps, 24, 120));
+        mod->setSettingValue<std::string>("render-res", renderRes);
+        mod->setSettingValue<std::string>("render-bitrate", renderBitrate);
     }
 };
 
-// Floor-aligned frame count for integer mode (2.9 -> 2, 1.9 -> 1, 0.7 -> 1)
 inline double resolveDisplayFrames(double rawFrames, bool cbfMode) {
     if (cbfMode) return std::max(0.05, rawFrames);
     return static_cast<double>(std::max(1, static_cast<int>(std::floor(rawFrames + 1e-6))));
@@ -199,8 +213,6 @@ inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
 
     std::vector<TierDef> tiers;
     if (style == TableStyle::TopDown24) {
-        // Strict FLOOR-aligned boundaries: [0,2)->1, [2,3)->2, [3,4)->3, [4,5)->4, [5,7)->5-6, ...
-        // So 2.9 ALWAYS lands in "2:", NEVER "3:"!
         struct RawTD { const char* key; double lo; double hi; const char* lbl; ccColor3B col; float pitch; };
         const RawTD raw[9] = {
             { "1",     0.0,  2.0,  "1:",     ccc3(255, 110, 102),  0.32f },
@@ -247,7 +259,6 @@ inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
             tiers.push_back({ b.key, lbl, desc, msRangeStr(lo, hi), lo, hi, b.col, b.pitch });
         }
     } else {
-        // Strict FLOOR-aligned discrete tiers: [0,2)->1, [2,3)->2, [3,4)->3, [4,5)->4, [5,7)->5-6, ...
         struct RawDisc { const char* key; double lo; double hi; const char* lbl; ccColor3B col; float pitch; };
         const RawDisc raw[7] = {
             { "9-12", 9.0, 1e9,  "9-12:", ccc3(122, 160, 255), -0.10f },
@@ -281,7 +292,6 @@ inline int findTierIndex(std::vector<TierDef> const& tiers, double frames) {
     return (tiers.front().minF <= 0.001) ? static_cast<int>(tiers.size()) - 1 : 0;
 }
 
-// Always floors in integer mode (2.9 -> "2", 1.9 -> "1"), exact decimals in CBF mode!
 inline std::string formatCircleNumber(double frames, bool cbfMode) {
     if (!cbfMode) {
         int floored = std::max(1, static_cast<int>(std::floor(frames + 1e-6)));
@@ -302,6 +312,7 @@ inline double framesToHz(double frames, double refFps) {
     return 1.0 / sec;
 }
 
+// Raw Precision difficulty weight per click (exponentially higher on tight frame windows!)
 inline double clickPrecisionWeight(double ms) {
     double clampedMs = std::max(0.5, ms);
     return std::pow(18.0 / clampedMs, 1.45);

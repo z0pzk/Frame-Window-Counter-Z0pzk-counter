@@ -8,9 +8,9 @@
     },
     "id": "z0pzk.frame-window-counter",
     "name": "Frame Window Counter",
-    "version": "v8.0.0",
+    "version": "v9.0.0",
     "developer": "z0pzk",
-    "description": "Exact GD 2.2 Frame & CBF Window Counter with true 0.9-scaled GD physics, floor rounding, death-click rejection, direct-engine Scan Exact pathfinder, bright additive tier glow, callout comments, and per-tier custom sounds.",
+    "description": "Exact GD 2.2 Frame & CBF Window Counter with Difficulty % calculation, Intro Frame-0 Freeze, Built-in Lightweight FFmpeg Renderer, Universal Bot & Renderer Click Detection, Scan Exact Pathfinder, bright additive glow, and per-tier sounds.",
     "resources": {
         "files": [
             "resources/*.wav",
@@ -98,7 +98,7 @@
         },
         "show-bottom-stats": {
             "type": "bool",
-            "name": "Show Bottom-Left % & Score",
+            "name": "Show Bottom-Left Difficulty % & Score",
             "default": true
         },
         "show-watermark": {
@@ -133,10 +133,15 @@
                 "always"
             ]
         },
+        "intro-freeze": {
+            "type": "bool",
+            "name": "Freeze Game on Frame 0 During Intro",
+            "default": true
+        },
         "banner-duration": {
             "type": "float",
             "name": "Intro Duration (sec)",
-            "default": 2.8,
+            "default": 2.6,
             "min": 0.8,
             "max": 8.0
         },
@@ -195,6 +200,33 @@
             "type": "bool",
             "name": "Capture Clicks to Manual",
             "default": false
+        },
+        "render-fps": {
+            "type": "int",
+            "name": "Render Video FPS",
+            "default": 60,
+            "min": 24,
+            "max": 120
+        },
+        "render-res": {
+            "type": "string",
+            "name": "Render Resolution",
+            "default": "720p",
+            "one-of": [
+                "window",
+                "720p",
+                "1080p"
+            ]
+        },
+        "render-bitrate": {
+            "type": "string",
+            "name": "Render Bitrate",
+            "default": "12M",
+            "one-of": [
+                "8M",
+                "12M",
+                "25M"
+            ]
         }
     }
 }

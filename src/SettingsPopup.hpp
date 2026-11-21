@@ -2,6 +2,7 @@
 
 #include "AudioManager.hpp"
 #include "Config.hpp"
+#include "InternalRenderer.hpp"
 #include "MarkerStore.hpp"
 #include "TierSoundStore.hpp"
 #include <Geode/ui/TextInput.hpp>
@@ -20,11 +21,13 @@ private:
     ModConfig m_cfg;
     std::function<void()> m_onChanged;
     std::function<void()> m_onStartExactScan;
+    std::function<void()> m_onToggleRender;
     size_t m_recordedRunClicks = 0;
+    bool m_isRenderingNow = false;
     float m_currentPlayerX = 0.0f;
     float m_currentPlayerY = 30.0f;
 
-    int m_activeTab = 0;
+    int m_activeTab = 0; // 0=General, 1=HUD, 2=Audio, 3=Manual, 4=Render
     int m_audioSubTab = 0;
     int m_selectedTierIdx = 0;
     bool m_tierIdxInited = false;
@@ -35,8 +38,8 @@ private:
     CCNode* m_contentNode = nullptr;
     CCMenu* m_tabMenu = nullptr;
 
-    static constexpr float kPanelW = 446.0f;
-    static constexpr float kPanelH = 296.0f;
+    static constexpr float kPanelW = 452.0f;
+    static constexpr float kPanelH = 298.0f;
 
     void notifyLive() {
         m_cfg.save();
@@ -135,14 +138,14 @@ private:
         m_tabMenu->setPosition({ 0.0f, 0.0f });
         m_panel->addChild(m_tabMenu, 10);
 
-        const char* names[4] = { "General", "HUD", "Audio", "Manual" };
-        float tabW = 92.0f;
-        float gap = 8.0f;
-        float totalW = 4 * tabW + 3 * gap;
+        const char* names[5] = { "General", "HUD", "Audio", "Manual", "Render" };
+        float tabW = 76.0f;
+        float gap = 6.0f;
+        float totalW = 5 * tabW + 4 * gap;
         float startX = (kPanelW - totalW) * 0.5f + tabW * 0.5f;
         float tabY = kPanelH - 46.0f;
 
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < 5; ++i) {
             bool active = (m_activeTab == i);
             auto* spr = ButtonSprite::create(
                 names[i],
@@ -151,7 +154,7 @@ private:
                 active ? "goldFont.fnt" : "bigFont.fnt",
                 active ? "GJ_button_01.png" : "GJ_button_04.png",
                 24.0f,
-                active ? 0.60f : 0.42f
+                active ? 0.56f : 0.40f
             );
             auto* btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(SettingsPopup::onTabSelect));
             btn->setTag(i);
@@ -193,6 +196,7 @@ private:
         float topY = kPanelH - 80.0f;
 
         if (m_activeTab == 0) {
+            // GENERAL TAB
             addCheckboxRow(m_contentNode, menu, "Enable Mod", m_cfg.enabled, 100, leftX, topY);
 
             std::string scanTxt = m_recordedRunClicks > 0
@@ -279,62 +283,67 @@ private:
             addCheckboxRow(m_contentNode, menu, "Auto Comments", m_cfg.showAutoComments, 105, rightX, topY - 156.0f);
 
             auto* tip = CCLabelBMFont::create(
-                "Turn off Noclip & Bot Playback before pressing Scan Exact for 100% real GD windows!",
+                "Bottom % tracks Difficulty % (auto-calibrates on level completion or Manual/Scan Exact).",
                 "chatFont.fnt"
             );
-            tip->setScale(0.52f);
+            tip->setScale(0.51f);
             tip->setColor(ccc3(195, 202, 214));
             tip->setPosition({ kPanelW * 0.5f, 24.0f });
             m_contentNode->addChild(tip, 3);
         }
         else if (m_activeTab == 1) {
+            // HUD & INTRO FREEZE TAB
             addCheckboxRow(m_contentNode, menu, "Top-Left Table", m_cfg.showTierTable, 110, leftX, topY);
             addCheckboxRow(m_contentNode, menu, "ms & Hz Readout", m_cfg.showMsHz, 111, rightX, topY);
 
-            addCheckboxRow(m_contentNode, menu, "Bottom % / Score", m_cfg.showBottomStats, 112, leftX, topY - 28.0f);
-            addCheckboxRow(m_contentNode, menu, "Center Watermark", m_cfg.showWatermark, 113, rightX, topY - 28.0f);
+            addCheckboxRow(m_contentNode, menu, "Diff % & Score", m_cfg.showBottomStats, 112, leftX, topY - 26.0f);
+            addCheckboxRow(m_contentNode, menu, "Center Watermark", m_cfg.showWatermark, 113, rightX, topY - 26.0f);
 
-            addLabel(m_contentNode, "Intro:", leftX, topY - 60.0f, 0.36f, "goldFont.fnt");
+            // Intro mode + Freeze Game on Frame 0 checkbox!
+            addLabel(m_contentNode, "Intro:", leftX, topY - 56.0f, 0.34f, "goldFont.fnt");
             const char* bNames[3] = { "Off", "1st Try", "Always" };
             for (int i = 0; i < 3; ++i) {
                 bool sel = (static_cast<int>(m_cfg.bannerMode) == i);
                 auto* b = CCMenuItemSpriteExtra::create(
-                    makeMiniBtn(bNames[i], 54.0f, 21.0f, sel ? "GJ_button_01.png" : "GJ_button_04.png"),
+                    makeMiniBtn(bNames[i], 50.0f, 20.0f, sel ? "GJ_button_01.png" : "GJ_button_04.png"),
                     this, menu_selector(SettingsPopup::onBannerModeBtn)
                 );
                 b->setTag(i);
-                b->setPosition({ leftX + 76.0f + i * 58.0f, topY - 60.0f });
+                b->setPosition({ leftX + 70.0f + i * 54.0f, topY - 56.0f });
                 menu->addChild(b);
             }
-            addStepperRow(m_contentNode, menu, "Cmt Fade", fmt::format("{:.1f}s", m_cfg.commentFadeSec), 210, 211, rightX + 20.0f, topY - 60.0f, colW - 20.0f);
+            addCheckboxRow(m_contentNode, menu, "Freeze Frame 0", m_cfg.introFreeze, 114, rightX, topY - 56.0f);
 
-            addLabel(m_contentNode, "Watermark:", leftX, topY - 94.0f, 0.36f, "goldFont.fnt");
-            auto* wmInput = geode::TextInput::create(262.0f, "FWC COUNTER", "chatFont.fnt");
+            addStepperRow(m_contentNode, menu, "Intro Time", fmt::format("{:.1f}s", m_cfg.bannerDuration), 212, 213, leftX, topY - 84.0f, colW);
+            addStepperRow(m_contentNode, menu, "Cmt Fade", fmt::format("{:.1f}s", m_cfg.commentFadeSec), 210, 211, rightX, topY - 84.0f, colW);
+
+            addLabel(m_contentNode, "Watermark:", leftX, topY - 114.0f, 0.34f, "goldFont.fnt");
+            auto* wmInput = geode::TextInput::create(268.0f, "FWC COUNTER", "chatFont.fnt");
             wmInput->setMaxCharCount(32);
             wmInput->setString(m_cfg.watermarkText);
-            wmInput->setPosition({ leftX + fullW - 131.0f, topY - 94.0f });
+            wmInput->setPosition({ leftX + fullW - 134.0f, topY - 114.0f });
             wmInput->setCallback([this](std::string const& str) {
                 m_cfg.watermarkText = str;
                 notifyLive();
             });
             m_contentNode->addChild(wmInput, 8);
 
-            addLabel(m_contentNode, "Subtitle:", leftX, topY - 126.0f, 0.36f, "goldFont.fnt");
-            auto* subInput = geode::TextInput::create(262.0f, "Empty (optional)...", "chatFont.fnt");
+            addLabel(m_contentNode, "Subtitle:", leftX, topY - 142.0f, 0.34f, "goldFont.fnt");
+            auto* subInput = geode::TextInput::create(268.0f, "Empty (optional)...", "chatFont.fnt");
             subInput->setMaxCharCount(48);
             subInput->setString(m_cfg.bannerComment);
-            subInput->setPosition({ leftX + fullW - 131.0f, topY - 126.0f });
+            subInput->setPosition({ leftX + fullW - 134.0f, topY - 142.0f });
             subInput->setCallback([this](std::string const& str) {
                 m_cfg.bannerComment = str;
                 notifyLive();
             });
             m_contentNode->addChild(subInput, 8);
 
-            addLabel(m_contentNode, "Bottom:", leftX, topY - 158.0f, 0.36f, "goldFont.fnt");
-            auto* precInput = geode::TextInput::create(262.0f, "Empty (optional)...", "chatFont.fnt");
+            addLabel(m_contentNode, "Bottom:", leftX, topY - 170.0f, 0.34f, "goldFont.fnt");
+            auto* precInput = geode::TextInput::create(268.0f, "Empty (optional)...", "chatFont.fnt");
             precInput->setMaxCharCount(48);
             precInput->setString(m_cfg.rawPrecisionText);
-            precInput->setPosition({ leftX + fullW - 131.0f, topY - 158.0f });
+            precInput->setPosition({ leftX + fullW - 134.0f, topY - 170.0f });
             precInput->setCallback([this](std::string const& str) {
                 m_cfg.rawPrecisionText = str;
                 notifyLive();
@@ -342,6 +351,7 @@ private:
             m_contentNode->addChild(precInput, 8);
         }
         else if (m_activeTab == 2) {
+            // AUDIO TAB
             auto tiers = currentTiers();
             int ovCount = TierSoundStore::get().countActiveOverrides(tiers);
 
@@ -514,7 +524,8 @@ private:
                 m_contentNode->addChild(tip, 3);
             }
         }
-        else {
+        else if (m_activeTab == 3) {
+            // MANUAL MARKERS TAB
             auto& markers = MarkerStore::get().markers();
 
             addCheckboxRow(m_contentNode, menu, "Capture Clicks", m_cfg.captureToManual, 130, leftX, topY);
@@ -551,7 +562,7 @@ private:
 
             if (markers.empty()) {
                 auto* emptyLbl = CCLabelBMFont::create(
-                    "No markers yet. Use 'Scan Exact' in General tab for automatic exact windows,\nor press '+ Mark Here' manually!",
+                    "No markers yet. Use 'Scan Exact' in General tab or press '+ Mark Here' manually!",
                     "chatFont.fnt"
                 );
                 emptyLbl->setAlignment(kCCTextAlignmentCenter);
@@ -627,8 +638,83 @@ private:
             nextBtn->setPosition({ leftX + fullW - 16.0f, 24.0f });
             menu->addChild(nextBtn);
         }
+        else {
+            // BUILT-IN LIGHTWEIGHT RENDERER TAB!
+            addLabel(m_contentNode, "Built-in Showcase Renderer (Bot-Safe & Low RAM)", leftX, topY, 0.34f, "goldFont.fnt");
+
+            // Resolution selector: Window / 720p / 1080p
+            addLabel(m_contentNode, "Quality:", leftX, topY - 34.0f, 0.34f, "bigFont.fnt");
+            const char* resKeys[3] = { "window", "720p", "1080p" };
+            const char* resLbls[3] = { "Window", "720p", "1080p" };
+            for (int i = 0; i < 3; ++i) {
+                bool sel = (m_cfg.renderRes == resKeys[i]);
+                auto* rb = CCMenuItemSpriteExtra::create(
+                    makeMiniBtn(resLbls[i], 62.0f, 22.0f, sel ? "GJ_button_01.png" : "GJ_button_04.png"),
+                    this, menu_selector(SettingsPopup::onRenderResBtn)
+                );
+                rb->setTag(i);
+                rb->setPosition({ leftX + 124.0f + i * 68.0f, topY - 34.0f });
+                menu->addChild(rb);
+            }
+
+            // FPS selector: 30 / 60
+            addLabel(m_contentNode, "Video FPS:", leftX, topY - 68.0f, 0.34f, "bigFont.fnt");
+            const int fpsVals[2] = { 30, 60 };
+            for (int i = 0; i < 2; ++i) {
+                bool sel = (m_cfg.renderFps == fpsVals[i]);
+                auto* fb = CCMenuItemSpriteExtra::create(
+                    makeMiniBtn(fpsVals[i] == 30 ? "30 FPS" : "60 FPS", 64.0f, 22.0f, sel ? "GJ_button_01.png" : "GJ_button_04.png"),
+                    this, menu_selector(SettingsPopup::onRenderFpsBtn)
+                );
+                fb->setTag(fpsVals[i]);
+                fb->setPosition({ leftX + 125.0f + i * 70.0f, topY - 68.0f });
+                menu->addChild(fb);
+            }
+
+            // Bitrate selector: 8M / 12M / 25M
+            addLabel(m_contentNode, "Bitrate:", rightX + 20.0f, topY - 68.0f, 0.32f, "bigFont.fnt");
+            const char* brKeys[3] = { "8M", "12M", "25M" };
+            for (int i = 0; i < 3; ++i) {
+                bool sel = (m_cfg.renderBitrate == brKeys[i]);
+                auto* bb = CCMenuItemSpriteExtra::create(
+                    makeMiniBtn(brKeys[i], 38.0f, 21.0f, sel ? "GJ_button_01.png" : "GJ_button_04.png"),
+                    this, menu_selector(SettingsPopup::onRenderBitrateBtn)
+                );
+                bb->setTag(i);
+                bb->setPosition({ rightX + 98.0f + i * 42.0f, topY - 68.0f });
+                menu->addChild(bb);
+            }
+
+            // Big Start / Stop Render button + Open Renders Folder button
+            auto* startSpr = ButtonSprite::create(
+                m_isRenderingNow ? "Stop & Save" : "Start Render",
+                140, true, "goldFont.fnt",
+                m_isRenderingNow ? "GJ_button_06.png" : "GJ_button_01.png",
+                28.0f, 0.62f
+            );
+            auto* startBtn = CCMenuItemSpriteExtra::create(startSpr, this, menu_selector(SettingsPopup::onToggleRenderBtn));
+            startBtn->setPosition({ kPanelW * 0.5f - 66.0f, topY - 116.0f });
+            menu->addChild(startBtn);
+
+            auto* folderSpr = ButtonSprite::create("Renders Folder", 118, true, "bigFont.fnt", "GJ_button_04.png", 26.0f, 0.42f);
+            auto* folderBtn = CCMenuItemSpriteExtra::create(folderSpr, this, menu_selector(SettingsPopup::onOpenRendersFolderBtn));
+            folderBtn->setPosition({ kPanelW * 0.5f + 92.0f, topY - 116.0f });
+            menu->addChild(folderBtn);
+
+            auto* info = CCLabelBMFont::create(
+                "1) Turn on your bot (Silicate Playback)  2) Press Start Render!\n"
+                "Captures Intro Freeze + Circles + HUD at fixed FPS (requires ffmpeg.exe in PATH or Renders Folder).",
+                "chatFont.fnt"
+            );
+            info->setAlignment(kCCTextAlignmentCenter);
+            info->setScale(0.51f);
+            info->setColor(ccc3(202, 210, 224));
+            info->setPosition({ kPanelW * 0.5f, 34.0f });
+            m_contentNode->addChild(info, 3);
+        }
     }
 
+    // Callbacks
     void onStartScanBtn(CCObject*) {
         if (m_recordedRunClicks == 0) {
             FLAlertLayer::create(
@@ -641,6 +727,35 @@ private:
         auto cb = m_onStartExactScan;
         this->removeFromParent();
         if (cb) cb();
+    }
+
+    void onToggleRenderBtn(CCObject*) {
+        auto cb = m_onToggleRender;
+        this->removeFromParent();
+        if (cb) cb();
+    }
+
+    void onOpenRendersFolderBtn(CCObject*) {
+        geode::utils::file::openFolder(InternalRenderer::get().getRendersDir());
+    }
+
+    void onRenderResBtn(CCObject* sender) {
+        const char* resKeys[3] = { "window", "720p", "1080p" };
+        int idx = std::clamp(static_cast<CCNode*>(sender)->getTag(), 0, 2);
+        m_cfg.renderRes = resKeys[idx];
+        applyAndRebuild();
+    }
+
+    void onRenderFpsBtn(CCObject* sender) {
+        m_cfg.renderFps = static_cast<int64_t>(static_cast<CCNode*>(sender)->getTag());
+        applyAndRebuild();
+    }
+
+    void onRenderBitrateBtn(CCObject* sender) {
+        const char* brKeys[3] = { "8M", "12M", "25M" };
+        int idx = std::clamp(static_cast<CCNode*>(sender)->getTag(), 0, 2);
+        m_cfg.renderBitrate = brKeys[idx];
+        applyAndRebuild();
     }
 
     void onTabSelect(CCObject* sender) {
@@ -712,6 +827,7 @@ private:
             case 111: m_cfg.showMsHz = !m_cfg.showMsHz; break;
             case 112: m_cfg.showBottomStats = !m_cfg.showBottomStats; break;
             case 113: m_cfg.showWatermark = !m_cfg.showWatermark; break;
+            case 114: m_cfg.introFreeze = !m_cfg.introFreeze; break;
             case 120: m_cfg.soundEnabled = !m_cfg.soundEnabled; break;
             case 121: m_cfg.dynamicPitch = !m_cfg.dynamicPitch; break;
             case 130: m_cfg.captureToManual = !m_cfg.captureToManual; break;
@@ -743,6 +859,8 @@ private:
             case 201: m_cfg.circleScale = std::min(2.5f, m_cfg.circleScale + 0.1f); break;
             case 210: m_cfg.commentFadeSec = std::max(0.5f, m_cfg.commentFadeSec - 0.3f); break;
             case 211: m_cfg.commentFadeSec = std::min(8.0f, m_cfg.commentFadeSec + 0.3f); break;
+            case 212: m_cfg.bannerDuration = std::max(0.8f, m_cfg.bannerDuration - 0.2f); break;
+            case 213: m_cfg.bannerDuration = std::min(8.0f, m_cfg.bannerDuration + 0.2f); break;
             case 220: m_cfg.soundPitch = std::max(0.4f, m_cfg.soundPitch - 0.05f); break;
             case 221: m_cfg.soundPitch = std::min(2.5f, m_cfg.soundPitch + 0.05f); break;
             case 222: m_cfg.soundVolume = std::max(0.0f, m_cfg.soundVolume - 0.05f); break;
@@ -878,7 +996,15 @@ private:
         this->removeFromParent();
     }
 
-    bool setup(std::function<void()> onChanged, std::function<void()> onStartExactScan, size_t recordedClicks, float playerX, float playerY) {
+    bool setup(
+        std::function<void()> onChanged,
+        std::function<void()> onStartExactScan,
+        std::function<void()> onToggleRender,
+        size_t recordedClicks,
+        bool isRenderingNow,
+        float playerX,
+        float playerY
+    ) {
         if (!FLAlertLayer::init(165)) return false;
 
         if (!m_buttonMenu) {
@@ -890,7 +1016,9 @@ private:
         m_cfg = ModConfig::load();
         m_onChanged = std::move(onChanged);
         m_onStartExactScan = std::move(onStartExactScan);
+        m_onToggleRender = std::move(onToggleRender);
         m_recordedRunClicks = recordedClicks;
+        m_isRenderingNow = isRenderingNow;
         m_currentPlayerX = playerX;
         m_currentPlayerY = playerY;
 
@@ -918,9 +1046,17 @@ private:
     }
 
 public:
-    static SettingsPopup* create(std::function<void()> onChanged, std::function<void()> onStartExactScan, size_t recordedClicks, float playerX, float playerY) {
+    static SettingsPopup* create(
+        std::function<void()> onChanged,
+        std::function<void()> onStartExactScan,
+        std::function<void()> onToggleRender,
+        size_t recordedClicks,
+        bool isRenderingNow,
+        float playerX,
+        float playerY
+    ) {
         auto* ret = new SettingsPopup();
-        if (ret && ret->setup(std::move(onChanged), std::move(onStartExactScan), recordedClicks, playerX, playerY)) {
+        if (ret && ret->setup(std::move(onChanged), std::move(onStartExactScan), std::move(onToggleRender), recordedClicks, isRenderingNow, playerX, playerY)) {
             ret->autorelease();
             return ret;
         }
