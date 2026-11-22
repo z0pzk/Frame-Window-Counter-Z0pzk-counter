@@ -27,7 +27,7 @@ private:
     float m_currentPlayerX = 0.0f;
     float m_currentPlayerY = 30.0f;
 
-    int m_activeTab = 0; // 0=General, 1=HUD, 2=Audio, 3=Manual, 4=Render
+    int m_activeTab = 0;
     int m_audioSubTab = 0;
     int m_selectedTierIdx = 0;
     bool m_tierIdxInited = false;
@@ -196,7 +196,6 @@ private:
         float topY = kPanelH - 80.0f;
 
         if (m_activeTab == 0) {
-            // GENERAL TAB
             addCheckboxRow(m_contentNode, menu, "Enable Mod", m_cfg.enabled, 100, leftX, topY);
 
             std::string scanTxt = m_recordedRunClicks > 0
@@ -283,7 +282,7 @@ private:
             addCheckboxRow(m_contentNode, menu, "Auto Comments", m_cfg.showAutoComments, 105, rightX, topY - 156.0f);
 
             auto* tip = CCLabelBMFont::create(
-                "Bottom % tracks Difficulty % (auto-calibrates on level completion or Manual/Scan Exact).",
+                "v10.1: Native 1/2/3... tiers for any Ref FPS (240, 360, 1000+), live Move/D-Block hitboxes.",
                 "chatFont.fnt"
             );
             tip->setScale(0.51f);
@@ -292,15 +291,13 @@ private:
             m_contentNode->addChild(tip, 3);
         }
         else if (m_activeTab == 1) {
-            // HUD & INTRO FREEZE TAB
             addCheckboxRow(m_contentNode, menu, "Top-Left Table", m_cfg.showTierTable, 110, leftX, topY);
             addCheckboxRow(m_contentNode, menu, "ms & Hz Readout", m_cfg.showMsHz, 111, rightX, topY);
 
-            addCheckboxRow(m_contentNode, menu, "Diff % & Score", m_cfg.showBottomStats, 112, leftX, topY - 26.0f);
-            addCheckboxRow(m_contentNode, menu, "Center Watermark", m_cfg.showWatermark, 113, rightX, topY - 26.0f);
+            addCheckboxRow(m_contentNode, menu, "Diff % & Score", m_cfg.showBottomStats, 112, leftX, topY - 25.0f);
+            addCheckboxRow(m_contentNode, menu, "Center Watermark", m_cfg.showWatermark, 113, rightX, topY - 25.0f);
 
-            // Intro mode + Freeze Game on Frame 0 checkbox!
-            addLabel(m_contentNode, "Intro:", leftX, topY - 56.0f, 0.34f, "goldFont.fnt");
+            addLabel(m_contentNode, "Intro:", leftX, topY - 53.0f, 0.34f, "goldFont.fnt");
             const char* bNames[3] = { "Off", "1st Try", "Always" };
             for (int i = 0; i < 3; ++i) {
                 bool sel = (static_cast<int>(m_cfg.bannerMode) == i);
@@ -309,41 +306,41 @@ private:
                     this, menu_selector(SettingsPopup::onBannerModeBtn)
                 );
                 b->setTag(i);
-                b->setPosition({ leftX + 70.0f + i * 54.0f, topY - 56.0f });
+                b->setPosition({ leftX + 70.0f + i * 54.0f, topY - 53.0f });
                 menu->addChild(b);
             }
-            addCheckboxRow(m_contentNode, menu, "Freeze Frame 0", m_cfg.introFreeze, 114, rightX, topY - 56.0f);
+            addCheckboxRow(m_contentNode, menu, "Freeze Frame 0", m_cfg.introFreeze, 114, rightX, topY - 53.0f);
 
-            addStepperRow(m_contentNode, menu, "Intro Time", fmt::format("{:.1f}s", m_cfg.bannerDuration), 212, 213, leftX, topY - 84.0f, colW);
-            addStepperRow(m_contentNode, menu, "Cmt Fade", fmt::format("{:.1f}s", m_cfg.commentFadeSec), 210, 211, rightX, topY - 84.0f, colW);
+            addStepperRow(m_contentNode, menu, "HUD Scale", fmt::format("{:.2f}x", m_cfg.hudScale), 214, 215, leftX, topY - 81.0f, colW);
+            addStepperRow(m_contentNode, menu, "Intro Time", fmt::format("{:.1f}s", m_cfg.bannerDuration), 212, 213, rightX, topY - 81.0f, colW);
 
-            addLabel(m_contentNode, "Watermark:", leftX, topY - 114.0f, 0.34f, "goldFont.fnt");
+            addLabel(m_contentNode, "Watermark:", leftX, topY - 111.0f, 0.34f, "goldFont.fnt");
             auto* wmInput = geode::TextInput::create(268.0f, "FWC COUNTER", "chatFont.fnt");
             wmInput->setMaxCharCount(32);
             wmInput->setString(m_cfg.watermarkText);
-            wmInput->setPosition({ leftX + fullW - 134.0f, topY - 114.0f });
+            wmInput->setPosition({ leftX + fullW - 134.0f, topY - 111.0f });
             wmInput->setCallback([this](std::string const& str) {
                 m_cfg.watermarkText = str;
                 notifyLive();
             });
             m_contentNode->addChild(wmInput, 8);
 
-            addLabel(m_contentNode, "Subtitle:", leftX, topY - 142.0f, 0.34f, "goldFont.fnt");
+            addLabel(m_contentNode, "Subtitle:", leftX, topY - 140.0f, 0.34f, "goldFont.fnt");
             auto* subInput = geode::TextInput::create(268.0f, "Empty (optional)...", "chatFont.fnt");
             subInput->setMaxCharCount(48);
             subInput->setString(m_cfg.bannerComment);
-            subInput->setPosition({ leftX + fullW - 134.0f, topY - 142.0f });
+            subInput->setPosition({ leftX + fullW - 134.0f, topY - 140.0f });
             subInput->setCallback([this](std::string const& str) {
                 m_cfg.bannerComment = str;
                 notifyLive();
             });
             m_contentNode->addChild(subInput, 8);
 
-            addLabel(m_contentNode, "Bottom:", leftX, topY - 170.0f, 0.34f, "goldFont.fnt");
+            addLabel(m_contentNode, "Bottom:", leftX, topY - 169.0f, 0.34f, "goldFont.fnt");
             auto* precInput = geode::TextInput::create(268.0f, "Empty (optional)...", "chatFont.fnt");
             precInput->setMaxCharCount(48);
             precInput->setString(m_cfg.rawPrecisionText);
-            precInput->setPosition({ leftX + fullW - 134.0f, topY - 170.0f });
+            precInput->setPosition({ leftX + fullW - 134.0f, topY - 169.0f });
             precInput->setCallback([this](std::string const& str) {
                 m_cfg.rawPrecisionText = str;
                 notifyLive();
@@ -351,7 +348,6 @@ private:
             m_contentNode->addChild(precInput, 8);
         }
         else if (m_activeTab == 2) {
-            // AUDIO TAB
             auto tiers = currentTiers();
             int ovCount = TierSoundStore::get().countActiveOverrides(tiers);
 
@@ -525,7 +521,6 @@ private:
             }
         }
         else if (m_activeTab == 3) {
-            // MANUAL MARKERS TAB
             auto& markers = MarkerStore::get().markers();
 
             addCheckboxRow(m_contentNode, menu, "Capture Clicks", m_cfg.captureToManual, 130, leftX, topY);
@@ -639,10 +634,29 @@ private:
             menu->addChild(nextBtn);
         }
         else {
-            // BUILT-IN LIGHTWEIGHT RENDERER TAB!
-            addLabel(m_contentNode, "Built-in Showcase Renderer (Bot-Safe & Low RAM)", leftX, topY, 0.34f, "goldFont.fnt");
+            auto& ren = InternalRenderer::get();
+            bool ffReady = ren.isFfmpegReady();
+            bool ffBusy = ren.isDownloadingFfmpeg();
 
-            // Resolution selector: Window / 720p / 1080p
+            std::string ffStatus = ffBusy
+                ? "FFmpeg: DOWNLOADING..."
+                : (ffReady ? "FFmpeg: READY" : "FFmpeg: NOT FOUND");
+            ccColor3B ffCol = ffBusy
+                ? ccc3(255, 224, 96)
+                : (ffReady ? ccc3(114, 244, 134) : ccc3(255, 130, 100));
+            addLabel(m_contentNode, ffStatus, leftX, topY, 0.36f, "bigFont.fnt", ffCol);
+
+            auto* dlBtn = CCMenuItemSpriteExtra::create(
+                makeMiniBtn(
+                    ffBusy ? "Downloading..." : (ffReady ? "Re-Download FFmpeg" : "Download FFmpeg"),
+                    148.0f, 22.0f,
+                    ffBusy ? "GJ_button_04.png" : (ffReady ? "GJ_button_05.png" : "GJ_button_01.png")
+                ),
+                this, menu_selector(SettingsPopup::onDownloadFfmpegBtn)
+            );
+            dlBtn->setPosition({ leftX + fullW - 74.0f, topY });
+            menu->addChild(dlBtn);
+
             addLabel(m_contentNode, "Quality:", leftX, topY - 34.0f, 0.34f, "bigFont.fnt");
             const char* resKeys[3] = { "window", "720p", "1080p" };
             const char* resLbls[3] = { "Window", "720p", "1080p" };
@@ -657,7 +671,6 @@ private:
                 menu->addChild(rb);
             }
 
-            // FPS selector: 30 / 60
             addLabel(m_contentNode, "Video FPS:", leftX, topY - 68.0f, 0.34f, "bigFont.fnt");
             const int fpsVals[2] = { 30, 60 };
             for (int i = 0; i < 2; ++i) {
@@ -671,7 +684,6 @@ private:
                 menu->addChild(fb);
             }
 
-            // Bitrate selector: 8M / 12M / 25M
             addLabel(m_contentNode, "Bitrate:", rightX + 20.0f, topY - 68.0f, 0.32f, "bigFont.fnt");
             const char* brKeys[3] = { "8M", "12M", "25M" };
             for (int i = 0; i < 3; ++i) {
@@ -685,7 +697,6 @@ private:
                 menu->addChild(bb);
             }
 
-            // Big Start / Stop Render button + Open Renders Folder button
             auto* startSpr = ButtonSprite::create(
                 m_isRenderingNow ? "Stop & Save" : "Start Render",
                 140, true, "goldFont.fnt",
@@ -702,19 +713,32 @@ private:
             menu->addChild(folderBtn);
 
             auto* info = CCLabelBMFont::create(
-                "1) Turn on your bot (Silicate Playback)  2) Press Start Render!\n"
-                "Captures Intro Freeze + Circles + HUD at fixed FPS (requires ffmpeg.exe in PATH or Renders Folder).",
+                "Press 'Download FFmpeg' once to install automatically (~15-30s in background).\n"
+                "Then turn on your bot and press Start Render for bot-safe MP4 capture!",
                 "chatFont.fnt"
             );
             info->setAlignment(kCCTextAlignmentCenter);
-            info->setScale(0.51f);
+            info->setScale(0.52f);
             info->setColor(ccc3(202, 210, 224));
             info->setPosition({ kPanelW * 0.5f, 34.0f });
             m_contentNode->addChild(info, 3);
         }
     }
 
-    // Callbacks
+    void onDownloadFfmpegBtn(CCObject*) {
+        auto& ren = InternalRenderer::get();
+        if (ren.isDownloadingFfmpeg()) return;
+
+        Ref<SettingsPopup> selfRef = this;
+        ren.startDownloadFfmpeg([selfRef](bool ok, std::string const& msg) {
+            FLAlertLayer::create(ok ? "FFmpeg Ready!" : "FFmpeg Download", msg.c_str(), "OK")->show();
+            if (selfRef && selfRef->getParent()) {
+                selfRef->rebuildContent();
+            }
+        });
+        rebuildContent();
+    }
+
     void onStartScanBtn(CCObject*) {
         if (m_recordedRunClicks == 0) {
             FLAlertLayer::create(
@@ -861,6 +885,8 @@ private:
             case 211: m_cfg.commentFadeSec = std::min(8.0f, m_cfg.commentFadeSec + 0.3f); break;
             case 212: m_cfg.bannerDuration = std::max(0.8f, m_cfg.bannerDuration - 0.2f); break;
             case 213: m_cfg.bannerDuration = std::min(8.0f, m_cfg.bannerDuration + 0.2f); break;
+            case 214: m_cfg.hudScale = std::max(0.7f, m_cfg.hudScale - 0.1f); break;
+            case 215: m_cfg.hudScale = std::min(2.0f, m_cfg.hudScale + 0.1f); break;
             case 220: m_cfg.soundPitch = std::max(0.4f, m_cfg.soundPitch - 0.05f); break;
             case 221: m_cfg.soundPitch = std::min(2.5f, m_cfg.soundPitch + 0.05f); break;
             case 222: m_cfg.soundVolume = std::max(0.0f, m_cfg.soundVolume - 0.05f); break;

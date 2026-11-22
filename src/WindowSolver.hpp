@@ -11,13 +11,14 @@ enum class ObjKind : uint8_t {
     Solid = 0,
     Hazard = 1,
     Slope = 2,
-    YellowOrb = 3,
-    PinkOrb = 4,
-    RedOrb = 5,
-    BlueOrb = 6,
-    GreenOrb = 7,
-    BlackOrb = 8,
-    DashOrb = 9
+    DBlock = 3,
+    YellowOrb = 4,
+    PinkOrb = 5,
+    RedOrb = 6,
+    BlueOrb = 7,
+    GreenOrb = 8,
+    BlackOrb = 9,
+    DashOrb = 10
 };
 
 struct SpatialObj {
@@ -27,6 +28,7 @@ struct SpatialObj {
     float maxY = 0.0f;
     ObjKind kind = ObjKind::Solid;
     uint8_t slopeType = 0;
+    bool hasDBlock = false;
 };
 
 struct SimParams {
@@ -71,14 +73,24 @@ inline bool boxHitsSlopeTriangle(float cx, float cy, float hw, float hh, Spatial
     }
 }
 
+inline bool insideAnyDBlock(std::vector<SpatialObj> const& local, float cx, float cy, float margin) {
+    float px0 = cx - margin, px1 = cx + margin, py0 = cy - margin, py1 = cy + margin;
+    for (auto const& o : local) {
+        if (o.kind == ObjKind::DBlock && rectOverlaps(px0, px1, py0, py1, o)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 inline bool hitsHazard(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh, bool waveMode) {
     float px0 = cx - hw, px1 = cx + hw, py0 = cy - hh, py1 = cy + hh;
     for (auto const& o : local) {
         if (o.kind == ObjKind::Hazard) {
             if (rectOverlaps(px0, px1, py0, py1, o)) return true;
-        } else if (waveMode && o.kind == ObjKind::Solid) {
+        } else if (waveMode && !o.hasDBlock && o.kind == ObjKind::Solid) {
             if (rectOverlaps(px0, px1, py0, py1, o)) return true;
-        } else if (waveMode && o.kind == ObjKind::Slope) {
+        } else if (waveMode && !o.hasDBlock && o.kind == ObjKind::Slope) {
             if (boxHitsSlopeTriangle(cx, cy, hw, hh, o)) return true;
         }
     }
@@ -184,10 +196,18 @@ inline float waveRayClearanceSec(
 }
 
 inline double solveWaveWindowSec(SimParams const& p, std::vector<SpatialObj> const& local) {
+    if (insideAnyDBlock(local, p.x0, p.y0, 12.0f)) {
+        return -1.0;
+    }
+
     float gravSign = p.upsideDown ? -1.0f : 1.0f;
     float slope = p.mini ? 2.0f : 1.0f;
-    float hw = p.mini ? 2.4f : 3.8f;
-    float hh = p.mini ? 2.4f : 3.8f;
+    float hw = p.mini ? 2.2f : 3.4f;
+    float hh = p.mini ? 2.2f : 3.4f;
+
+    if (hitsHazard(local, p.x0, p.y0, hw, hh, true)) {
+        return -1.0;
+    }
 
     float preVy  = (p.isPress ? -1.0f :  1.0f) * gravSign * p.vx * slope;
     float postVy = (p.isPress ?  1.0f : -1.0f) * gravSign * p.vx * slope;
@@ -201,8 +221,8 @@ inline double solveWaveWindowSec(SimParams const& p, std::vector<SpatialObj> con
         return -1.0;
     }
 
-    float reqPost = std::min(tPost0 * 0.85f, 0.048f);
-    if (reqPost < 0.002f) reqPost = 0.002f;
+    float reqPost = std::min(tPost0 * 0.55f, 0.024f);
+    if (reqPost < 0.001f) reqPost = 0.001f;
 
     auto isWaveShiftValid = [&](float dT) -> bool {
         if (dT > tLate || -dT > tBack) return false;
@@ -249,8 +269,37 @@ inline double solveWaveWindowSec(SimParams const& p, std::vector<SpatialObj> con
     }
 
     double winSec = static_cast<double>(earlyEdge + lateEdge);
-    if (winSec >= 0.098) return -1.0;
-    return std::max(0.0004, winSec);
+    if (winSec >= 0.095) return -1.0;
+    return std::max(0.0002, winSec);
+}
+
+inline double solveShipWindowSec(SimParams const& p, std::vector<SpatialObj> const& local) {
+    float gravSign = p.upsideDown ? -1.0f : 1.0f;
+    float hw = p.halfW * 0.90f;
+    float hh = p.halfH * 0.90f;
+
+    float upClear = 120.0f;
+    float downClear = 120.0f;
+    for (auto const& o : local) {
+        if (o.kind != ObjKind::Hazard && o.kind != ObjKind::Solid) continue;
+        if (o.maxX < p.x0 - 10.0f || o.minX > p.x0 + 65.0f) continue;
+
+        if (o.minY >= p.y0) {
+            float gap = (o.minY - (p.y0 + hh));
+            if (gap < upClear) upClear = std::max(0.0f, gap);
+        } else if (o.maxY <= p.y0) {
+            float gap = ((p.y0 - hh) - o.maxY);
+            if (gap < downClear) downClear = std::max(0.0f, gap);
+        }
+    }
+
+    float totalVertGap = upClear + downClear;
+    if (totalVertGap > 75.0f) return -1.0;
+
+    float activeGap = (gravSign > 0.0f) ? std::min(downClear + upClear * 0.45f, totalVertGap) : std::min(upClear + downClear * 0.45f, totalVertGap);
+    double tSec = std::sqrt((2.0 * std::max(0.8, static_cast<double>(activeGap))) / 1050.0) * 0.42;
+    if (tSec >= 0.085) return -1.0;
+    return std::clamp(tSec, 0.0005, 0.080);
 }
 
 struct ProbeOutcome {
@@ -278,8 +327,8 @@ inline ProbeOutcome simulateCandidate(
     if (!doClick) {
         float x = p.x0, y = p.y0;
         float vy = p.onGround ? 0.0f : p.vy0;
-        float g = (p.isShip ? -950.0f : -kCubeGrav) * gravSign;
-        bool onG = p.onGround && !p.isShip && !p.isUfo;
+        float g = -kCubeGrav * gravSign;
+        bool onG = p.onGround && !p.isUfo;
         bool startedInSolid = hitsSolidCore(local, x, y, p.halfW, p.halfH);
 
         int steps = std::max(1, static_cast<int>(std::ceil(horizonSec / dt)));
@@ -292,11 +341,11 @@ inline ProbeOutcome simulateCandidate(
                 }
             }
             if (!onG) {
-                vy += g * dt;
                 y += vy * dt;
+                vy += g * dt;
                 if (y < p.halfH && !p.upsideDown) {
                     y = p.halfH; vy = 0.0f;
-                    onG = !p.isShip && !p.isUfo;
+                    onG = !p.isUfo;
                 }
             }
             if (hitsHazard(local, x, y, hazHW, hazHH, false)) return { x, true };
@@ -308,7 +357,7 @@ inline ProbeOutcome simulateCandidate(
     float xClick = p.x0 + p.vx * deltaT;
     float yClick = p.y0;
 
-    if (p.onGround && !clickWasOrb && !p.isShip && !p.isUfo) {
+    if (p.onGround && !clickWasOrb && !p.isUfo) {
         if (checkGroundSupp && !hasGroundSupport(local, xClick, yClick, p.halfW, p.halfH, p.upsideDown)) {
             return { xClick, true };
         }
@@ -329,7 +378,7 @@ inline ProbeOutcome simulateCandidate(
             }
         }
     } else {
-        float preG = (p.isShip ? -950.0f : -kCubeGrav) * gravSign;
+        float preG = -kCubeGrav * gravSign;
         yClick = p.y0 + p.vy0 * deltaT + 0.5f * preG * deltaT * deltaT;
     }
 
@@ -354,9 +403,6 @@ inline ProbeOutcome simulateCandidate(
             case ObjKind::DashOrb:   vy = 0.0f; g = 0.0f; break;
             default:                 vy = 603.7f * gravSign; break;
         }
-    } else if (p.isShip) {
-        vy = p.vy0 + 135.0f * gravSign;
-        g = 1050.0f * gravSign;
     } else if (p.isUfo) {
         vy = (p.mini ? 388.0f : 432.0f) * gravSign;
         g = (p.mini ? -2790.0f : -2385.0f) * gravSign;
@@ -401,16 +447,16 @@ inline ProbeOutcome simulateCandidate(
         x += p.vx * dt;
 
         if (!onG) {
-            vy += g * dt;
             y += vy * dt;
+            vy += g * dt;
 
             if (y <= p.halfH && !p.upsideDown) {
                 y = p.halfH;
                 vy = 0.0f;
-                if (!p.isShip && !p.isUfo && s > 10) {
+                if (!p.isUfo && s > 10) {
                     onG = true;
                 }
-            } else if (!p.isShip && !p.isUfo && s > 14 && (vy * gravSign < 0.0f)) {
+            } else if (!p.isUfo && s > 14 && (vy * gravSign < 0.0f)) {
                 float supY = y;
                 if (findSupportY(local, x, y, p.halfW, p.halfH, p.upsideDown, supY)) {
                     y = supY;
@@ -441,10 +487,17 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
         return std::clamp(sec * std::max(30.0, refFps), 0.10, std::max(24.0, refFps * 0.10));
     }
 
+    if (p.isShip) {
+        if (local.empty()) return -1.0;
+        double sec = solveShipWindowSec(p, local);
+        if (sec < 0.0) return -1.0;
+        return std::clamp(sec * std::max(30.0, refFps), 0.25, std::max(24.0, refFps * 0.10));
+    }
+
     bool clickWasOrb = false;
     ObjKind orbKind = findOverlappingOrb(local, p.x0, p.y0, p.halfW, p.halfH, 8.0f, clickWasOrb);
 
-    if (!p.isShip && !p.isUfo && !p.onGround && !clickWasOrb) {
+    if (!p.isUfo && !p.onGround && !clickWasOrb) {
         if (!nearAnyGround(local, p.x0, p.y0, p.halfW, p.halfH, p.upsideDown)) {
             return -1.0;
         }
@@ -456,7 +509,7 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
     bool checkGroundSupp = p.onGround && !clickWasOrb &&
         hasGroundSupport(local, p.x0, p.y0, p.halfW, p.halfH, p.upsideDown);
 
-    float horizonSec = (p.isShip || p.isUfo) ? 0.18f : 0.44f;
+    float horizonSec = p.isUfo ? 0.22f : 0.44f;
 
     if (!clickWasOrb) {
         auto noClick = simulateCandidate(p, local, 0.0f, false, ObjKind::Solid, checkGroundSupp, false, horizonSec);
@@ -465,16 +518,18 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
         }
     }
 
-    constexpr int kHalfN = 24;
-    constexpr int kTotal = 2 * kHalfN + 1;
-    constexpr float kStep = 1.0f / 480.0f;
+    // Adaptive scan step: full [-41.7ms, +41.7ms] range at 1/960s (<=360 FPS) or 1/1440s (~0.69ms, >360 FPS)!
+    constexpr int kMaxTotal = 121;
+    const int halfN = (refFps > 360.0) ? 60 : 40;
+    const int total = 2 * halfN + 1;
+    const float step = (refFps > 360.0) ? (1.0f / 1440.0f) : (1.0f / 960.0f);
 
-    ProbeOutcome out[kTotal];
+    ProbeOutcome out[kMaxTotal];
     bool anySurvived = false;
     float bestX = p.x0;
 
-    for (int i = 0; i < kTotal; ++i) {
-        float dT = static_cast<float>(i - kHalfN) * kStep;
+    for (int i = 0; i < total; ++i) {
+        float dT = static_cast<float>(i - halfN) * step;
         out[i] = simulateCandidate(p, local, dT, clickWasOrb, orbKind, checkGroundSupp, true, horizonSec);
         if (!out[i].died) anySurvived = true;
         if (out[i].endX > bestX) bestX = out[i].endX;
@@ -482,13 +537,13 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
 
     auto isGood = [&](ProbeOutcome const& po) -> bool {
         if (anySurvived) return !po.died;
-        return (po.endX >= bestX - 2.5f) && (bestX - p.x0 > 12.0f);
+        return (po.endX >= bestX - 4.0f) && (bestX - p.x0 > 18.0f);
     };
 
     int anchor = -1;
-    for (int r = 0; r <= kHalfN; ++r) {
-        if (isGood(out[kHalfN + r])) { anchor = kHalfN + r; break; }
-        if (r > 0 && isGood(out[kHalfN - r])) { anchor = kHalfN - r; break; }
+    for (int r = 0; r <= halfN; ++r) {
+        if (isGood(out[halfN + r])) { anchor = halfN + r; break; }
+        if (r > 0 && isGood(out[halfN - r])) { anchor = halfN - r; break; }
     }
     if (anchor < 0) return -1.0;
 
@@ -496,15 +551,15 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
     while (leftIdx > 0 && isGood(out[leftIdx - 1])) leftIdx--;
 
     int rightIdx = anchor;
-    while (rightIdx < kTotal - 1 && isGood(out[rightIdx + 1])) rightIdx++;
+    while (rightIdx < total - 1 && isGood(out[rightIdx + 1])) rightIdx++;
 
-    if (leftIdx == 0 && rightIdx == kTotal - 1) return -1.0;
+    if (leftIdx == 0 && rightIdx == total - 1) return -1.0;
 
-    float leftT = static_cast<float>(leftIdx - kHalfN) * kStep;
+    float leftT = static_cast<float>(leftIdx - halfN) * step;
     if (leftIdx > 0) {
-        float badT = leftT - kStep;
+        float badT = leftT - step;
         float goodT = leftT;
-        for (int it = 0; it < 5; ++it) {
+        for (int it = 0; it < 4; ++it) {
             float mid = 0.5f * (badT + goodT);
             if (isGood(simulateCandidate(p, local, mid, clickWasOrb, orbKind, checkGroundSupp, true, horizonSec)))
                 goodT = mid;
@@ -514,11 +569,11 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
         leftT = goodT;
     }
 
-    float rightT = static_cast<float>(rightIdx - kHalfN) * kStep;
-    if (rightIdx < kTotal - 1) {
+    float rightT = static_cast<float>(rightIdx - halfN) * step;
+    if (rightIdx < total - 1) {
         float goodT = rightT;
-        float badT = rightT + kStep;
-        for (int it = 0; it < 5; ++it) {
+        float badT = rightT + step;
+        for (int it = 0; it < 4; ++it) {
             float mid = 0.5f * (goodT + badT);
             if (isGood(simulateCandidate(p, local, mid, clickWasOrb, orbKind, checkGroundSupp, true, horizonSec)))
                 goodT = mid;
@@ -528,7 +583,7 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
         rightT = goodT;
     }
 
-    double winSec = std::max(0.0004, static_cast<double>(rightT - leftT));
+    double winSec = std::max(0.0001, static_cast<double>(rightT - leftT));
     double frames = winSec * std::max(30.0, refFps);
     return std::clamp(frames, 0.10, std::max(24.0, refFps * 0.10));
 }

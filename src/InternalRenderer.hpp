@@ -3,11 +3,18 @@
 #include "Config.hpp"
 #include <Geode/Geode.hpp>
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <functional>
 #include <string>
+#include <thread>
 #include <vector>
+
+#ifdef GEODE_IS_WINDOWS
+#include <windows.h>
+#endif
 
 namespace fwc {
 
@@ -26,6 +33,7 @@ private:
     int m_framesWritten = 0;
     std::string m_outputPath;
     std::string m_lastError;
+    std::atomic<bool> m_downloadingFfmpeg{ false };
 
     static std::string sanitizeFileName(std::string const& raw) {
         std::string out;
@@ -40,18 +48,13 @@ private:
         return out.empty() ? "showcase" : out;
     }
 
-    std::string findFfmpegExecutable() const {
-        std::error_code ec;
-        auto localBin = getRendersDir() / "ffmpeg.exe";
-        if (std::filesystem::exists(localBin, ec)) {
-            return localBin.string();
+    static std::string escapePsSingleQuote(std::string const& s) {
+        std::string out;
+        for (char c : s) {
+            if (c == '\'') out += "''";
+            else out.push_back(c);
         }
-        auto cfgBin = Mod::get()->getConfigDir() / "ffmpeg.exe";
-        if (std::filesystem::exists(cfgBin, ec)) {
-            return cfgBin.string();
-        }
-        // Fallback to system PATH
-        return "ffmpeg";
+        return out;
     }
 
 public:
@@ -61,6 +64,7 @@ public:
     }
 
     bool isActive() const { return m_active; }
+    bool isDownloadingFfmpeg() const { return m_downloadingFfmpeg.load(); }
     int framesWritten() const { return m_framesWritten; }
     int fps() const { return m_fps; }
     std::string const& outputPath() const { return m_outputPath; }
@@ -73,19 +77,112 @@ public:
         return dir;
     }
 
+    std::string findFfmpegExecutable() const {
+        std::error_code ec;
+        auto localBin = getRendersDir() / "ffmpeg.exe";
+        if (std::filesystem::exists(localBin, ec)) return localBin.string();
+        auto cfgBin = Mod::get()->getConfigDir() / "ffmpeg.exe";
+        if (std::filesystem::exists(cfgBin, ec)) return cfgBin.string();
+        return "ffmpeg";
+    }
+
+    bool isFfmpegReady() const {
+        std::error_code ec;
+        if (std::filesystem::exists(getRendersDir() / "ffmpeg.exe", ec)) return true;
+        if (std::filesystem::exists(Mod::get()->getConfigDir() / "ffmpeg.exe", ec)) return true;
+#ifdef GEODE_IS_WINDOWS
+        char buf[MAX_PATH];
+        if (SearchPathA(nullptr, "ffmpeg.exe", nullptr, MAX_PATH, buf, nullptr) > 0) {
+            return true;
+        }
+#endif
+        return false;
+    }
+
+    void startDownloadFfmpeg(std::function<void(bool, std::string)> onDone) {
+        if (m_downloadingFfmpeg.exchange(true)) return;
+
+        auto targetDir = getRendersDir();
+        auto targetExe = targetDir / "ffmpeg.exe";
+
+        std::thread([this, targetDir, targetExe, onDone = std::move(onDone)]() {
+            bool ok = false;
+            std::string msg;
+#ifdef GEODE_IS_WINDOWS
+            auto tempZip = targetDir / "_ffmpeg_tmp.zip";
+            auto tempExt = targetDir / "_ffmpeg_ext";
+            std::string zipPs = escapePsSingleQuote(tempZip.string());
+            std::string extPs = escapePsSingleQuote(tempExt.string());
+            std::string exePs = escapePsSingleQuote(targetExe.string());
+
+            std::string psScript =
+                "$ErrorActionPreference='Stop'; "
+                "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; "
+                "$url='https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'; "
+                "if (Get-Command curl.exe -ErrorAction SilentlyContinue) { "
+                "  & curl.exe -L --silent --show-error -o '" + zipPs + "' $url "
+                "} else { "
+                "  Invoke-WebRequest -Uri $url -OutFile '" + zipPs + "' -UseBasicParsing "
+                "}; "
+                "if (Test-Path '" + extPs + "') { Remove-Item -Recurse -Force '" + extPs + "' }; "
+                "Expand-Archive -Path '" + zipPs + "' -DestinationPath '" + extPs + "' -Force; "
+                "$bin = Get-ChildItem -Path '" + extPs + "' -Filter 'ffmpeg.exe' -Recurse | Select-Object -First 1; "
+                "if ($bin) { Copy-Item -Path $bin.FullName -Destination '" + exePs + "' -Force }; "
+                "Remove-Item -Force '" + zipPs + "' -ErrorAction SilentlyContinue; "
+                "Remove-Item -Recurse -Force '" + extPs + "' -ErrorAction SilentlyContinue;";
+
+            std::string cmdLine = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"" + psScript + "\"";
+
+            STARTUPINFOA si{};
+            si.cb = sizeof(si);
+            si.dwFlags = STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE;
+            PROCESS_INFORMATION pi{};
+
+            std::vector<char> mutableCmd(cmdLine.begin(), cmdLine.end());
+            mutableCmd.push_back('\0');
+
+            if (CreateProcessA(nullptr, mutableCmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                WaitForSingleObject(pi.hProcess, INFINITE);
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+            }
+
+            std::error_code ec;
+            if (std::filesystem::exists(targetExe, ec) && std::filesystem::file_size(targetExe, ec) > 1000000) {
+                ok = true;
+                msg = "FFmpeg downloaded and installed automatically into the Renders folder! You can now press Start Render.";
+            } else {
+                ok = false;
+                msg = "Auto-download failed (check internet/VPN). You can also drop ffmpeg.exe manually into the Renders Folder.";
+            }
+#else
+            ok = false;
+            msg = "Automatic FFmpeg download is supported on Windows only.";
+#endif
+            m_downloadingFfmpeg.store(false);
+            Loader::get()->queueInMainThread([onDone, ok, msg]() {
+                if (onDone) onDone(ok, msg);
+            });
+        }).detach();
+    }
+
     bool start(std::string const& levelName, ModConfig const& cfg) {
         stop();
         m_lastError.clear();
 
 #ifdef GEODE_IS_WINDOWS
+        if (!isFfmpegReady()) {
+            m_lastError = "FFmpeg not found! Press 'Download FFmpeg' in the Render tab first.";
+            return false;
+        }
+
         auto* glView = CCEGLView::sharedOpenGLView();
         if (!glView) {
             m_lastError = "OpenGL view unavailable.";
             return false;
         }
 
-        // Capture at exact current window pixel dimensions (guaranteed zero Cocos2d-x FBO clipping!)
-        // and let FFmpeg scale cleanly to 720p / 1080p if selected.
         auto frameSz = glView->getFrameSize();
         m_texW = std::max(320, static_cast<int>(frameSz.width) & ~1);
         m_texH = std::max(240, static_cast<int>(frameSz.height) & ~1);
@@ -106,7 +203,6 @@ public:
         std::string ff = findFfmpegExecutable();
         std::string bitrate = cfg.renderBitrate.empty() ? "12M" : cfg.renderBitrate;
 
-        // Lightweight x264 pipe (fast preset, yuv420p for YouTube/TikTok/Discord compatibility, ~15MB RAM!)
         std::string cmd = fmt::format(
             "\"{}\" -y -f rawvideo -pix_fmt rgba -s {}x{} -r {} -i - "
             "-vf \"{}\" -c:v libx264 -preset fast -b:v {} -pix_fmt yuv420p -movflags +faststart \"{}\"",
@@ -115,11 +211,10 @@ public:
 
         m_pipe = _popen(cmd.c_str(), "wb");
         if (!m_pipe) {
-            m_lastError = "Could not launch ffmpeg. Place ffmpeg.exe in the Renders folder or add it to PATH.";
+            m_lastError = "Could not launch ffmpeg. Press 'Download FFmpeg' in the Render tab.";
             return false;
         }
 
-        // Create single reusable FBO
         m_rt = CCRenderTexture::create(m_texW, m_texH);
         if (!m_rt) {
             _pclose(m_pipe);
@@ -150,7 +245,7 @@ public:
 
         size_t written = std::fwrite(m_pixelBuf.data(), 1, m_pixelBuf.size(), m_pipe);
         if (written != m_pixelBuf.size()) {
-            m_lastError = "FFmpeg pipe closed! Make sure ffmpeg.exe is in the Renders folder or Windows PATH.";
+            m_lastError = "FFmpeg pipe closed unexpectedly.";
             stop();
             return false;
         }

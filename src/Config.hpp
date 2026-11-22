@@ -23,9 +23,9 @@ enum class BannerMode : int {
 };
 
 enum class TableStyle : int {
-    TopDown24 = 0, // 1, 2, 3, 4, 5-6, 7-8, 9-12, 13-16, 17-24
-    CbfRanges = 1, // 10+, 8-10, 6-8, 5-6, 4-5, 3-4, 2-3, 1-2, 0-1
-    Discrete  = 2  // 9-12, 7-8, 5-6, 4, 3, 2, 1
+    TopDown24 = 0,
+    CbfRanges = 1,
+    Discrete  = 2
 };
 
 struct TierDef {
@@ -53,6 +53,7 @@ struct ModConfig {
     bool showCircleLabel = true;
 
     bool showTierTable = true;
+    float hudScale = 1.35f;
     bool showMsHz = true;
     bool showBottomStats = true;
     bool showWatermark = true;
@@ -100,6 +101,7 @@ struct ModConfig {
         cfg.showCircleLabel = mod->getSettingValue<bool>("show-circle-label");
 
         cfg.showTierTable = mod->getSettingValue<bool>("show-tier-table");
+        cfg.hudScale = std::clamp(static_cast<float>(mod->getSettingValue<double>("hud-scale")), 0.7f, 2.0f);
         cfg.showMsHz = mod->getSettingValue<bool>("show-ms-hz");
         cfg.showBottomStats = mod->getSettingValue<bool>("show-bottom-stats");
         cfg.showWatermark = mod->getSettingValue<bool>("show-watermark");
@@ -152,6 +154,7 @@ struct ModConfig {
         mod->setSettingValue<bool>("show-circle-label", showCircleLabel);
 
         mod->setSettingValue<bool>("show-tier-table", showTierTable);
+        mod->setSettingValue<double>("hud-scale", std::clamp(static_cast<double>(hudScale), 0.7, 2.0));
         mod->setSettingValue<bool>("show-ms-hz", showMsHz);
         mod->setSettingValue<bool>("show-bottom-stats", showBottomStats);
         mod->setSettingValue<bool>("show-watermark", showWatermark);
@@ -192,91 +195,73 @@ inline double resolveDisplayFrames(double rawFrames, bool cbfMode) {
 
 inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
     double fps = std::max(30.0, refFps);
-    double scale = fps / 240.0;
 
     auto msRangeStr = [&](double loF, double hiF) -> std::string {
         double loMs = (loF / fps) * 1000.0;
         double hiMs = (hiF / fps) * 1000.0;
         if (hiF > 1e6) return fmt::format("(>{:.1f}ms)", loMs);
-        return fmt::format("({:.1f}-{:.1f}ms)", loMs, hiMs);
+        if (std::fabs(hiF - loF) < 0.05) return fmt::format("({:.2f}ms)", hiMs);
+        return fmt::format("({:.2f}-{:.2f}ms)", loMs, hiMs);
     };
     auto hzDescStr = [&](double loF, double hiF) -> std::string {
         if (hiF > 1e6) return "";
         double hz = fps / std::max(0.1, hiF);
-        if (loF <= 0.001) return fmt::format("(>{:.0f}Hz FP)", hz);
+        if (loF <= 0.001) return fmt::format("(>={:.0f}Hz FP)", hz);
         return fmt::format("(<{:.0f}Hz FP)", hz);
-    };
-    auto fmtNum = [](double v) -> std::string {
-        if (std::fabs(v - std::round(v)) < 0.05) return fmt::format("{:.0f}", std::round(v));
-        return fmt::format("{:.1f}", v);
     };
 
     std::vector<TierDef> tiers;
     if (style == TableStyle::TopDown24) {
-        struct RawTD { const char* key; double lo; double hi; const char* lbl; ccColor3B col; float pitch; };
+        // Fixed native frame buckets for ANY Ref FPS (e.g. 240, 360, 1000 FPS -> "1:" is ALWAYS 1 frame at that FPS!)
+        struct RawTD { const char* key; double lo; double hi; double dispLo; double dispHi; const char* lbl; ccColor3B col; float pitch; };
         const RawTD raw[9] = {
-            { "1",     0.0,  2.0,  "1:",     ccc3(255, 110, 102),  0.32f },
-            { "2",     2.0,  3.0,  "2:",     ccc3(255, 184,  88),  0.22f },
-            { "3",     3.0,  4.0,  "3:",     ccc3(255, 240, 106),  0.14f },
-            { "4",     4.0,  5.0,  "4:",     ccc3(244, 248, 255),  0.07f },
-            { "5-6",   5.0,  7.0,  "5-6:",   ccc3(114, 244, 134),  0.01f },
-            { "7-8",   7.0,  9.0,  "7-8:",   ccc3(110, 224, 255), -0.05f },
-            { "9-12",  9.0, 13.0,  "9-12:",  ccc3(118, 168, 255), -0.10f },
-            { "13-16",13.0, 17.0,  "13-16:", ccc3(196, 164, 255), -0.15f },
-            { "17-24",17.0, 1e9,   "17-24:", ccc3(244, 162, 232), -0.20f }
+            { "1",     0.0,  2.0,  0.0,  1.0,  "1:",     ccc3(255, 110, 102),  0.32f },
+            { "2",     2.0,  3.0,  2.0,  2.0,  "2:",     ccc3(255, 184,  88),  0.22f },
+            { "3",     3.0,  4.0,  3.0,  3.0,  "3:",     ccc3(255, 240, 106),  0.14f },
+            { "4",     4.0,  5.0,  4.0,  4.0,  "4:",     ccc3(244, 248, 255),  0.07f },
+            { "5-6",   5.0,  7.0,  5.0,  6.0,  "5-6:",   ccc3(114, 244, 134),  0.01f },
+            { "7-8",   7.0,  9.0,  7.0,  8.0,  "7-8:",   ccc3(110, 224, 255), -0.05f },
+            { "9-12",  9.0, 13.0,  9.0, 12.0,  "9-12:",  ccc3(118, 168, 255), -0.10f },
+            { "13-16",13.0, 17.0, 13.0, 16.0,  "13-16:", ccc3(196, 164, 255), -0.15f },
+            { "17-24",17.0, 1e9,  17.0, 24.0,  "17-24:", ccc3(244, 162, 232), -0.20f }
         };
         for (auto const& b : raw) {
-            double lo = b.lo * scale;
-            double hi = (b.hi > 1e6) ? 1e9 : (b.hi * scale);
-            std::string lbl = (std::fabs(scale - 1.0) < 0.05)
-                ? std::string(b.lbl)
-                : ((b.hi > 1e6) ? fmt::format("{}+:", fmtNum(lo)) : fmt::format("{}-{}:", fmtNum(lo), fmtNum(hi)));
-            std::string desc = fmt::format("{} FRAMES {}", lbl.substr(0, lbl.size() - 1), hzDescStr(lo, hi));
-            tiers.push_back({ b.key, lbl, desc, msRangeStr(lo, hi), lo, hi, b.col, b.pitch });
+            std::string desc = fmt::format("{} FRAMES {}", b.key, hzDescStr(b.dispLo, b.dispHi));
+            tiers.push_back({ b.key, b.lbl, desc, msRangeStr(b.dispLo, b.dispHi), b.lo, b.hi, b.col, b.pitch });
         }
     } else if (style == TableStyle::CbfRanges) {
-        struct RawBucket { const char* key; double lo; double hi; ccColor3B col; float pitch; };
+        struct RawBucket { const char* key; double lo; double hi; const char* lbl; ccColor3B col; float pitch; };
         const RawBucket raw[9] = {
-            { "10+",  10.0, 1e9,  ccc3(198, 154, 255), -0.14f },
-            { "8-10",  8.0, 10.0, ccc3(112, 165, 255), -0.09f },
-            { "6-8",   6.0,  8.0, ccc3( 96, 226, 255), -0.04f },
-            { "5-6",   5.0,  6.0, ccc3( 92, 242, 206),  0.00f },
-            { "4-5",   4.0,  5.0, ccc3(118, 244, 132),  0.05f },
-            { "3-4",   3.0,  4.0, ccc3(236, 246, 104),  0.10f },
-            { "2-3",   2.0,  3.0, ccc3(255, 198,  72),  0.16f },
-            { "1-2",   1.0,  2.0, ccc3(255, 118,  92),  0.23f },
-            { "0-1",   0.0,  1.0, ccc3(255,  86, 138),  0.32f }
+            { "10+",  10.0, 1e9,  "10+:",  ccc3(198, 154, 255), -0.14f },
+            { "8-10",  8.0, 10.0, "8-10:", ccc3(112, 165, 255), -0.09f },
+            { "6-8",   6.0,  8.0, "6-8:",  ccc3( 96, 226, 255), -0.04f },
+            { "5-6",   5.0,  6.0, "5-6:",  ccc3( 92, 242, 206),  0.00f },
+            { "4-5",   4.0,  5.0, "4-5:",  ccc3(118, 244, 132),  0.05f },
+            { "3-4",   3.0,  4.0, "3-4:",  ccc3(236, 246, 104),  0.10f },
+            { "2-3",   2.0,  3.0, "2-3:",  ccc3(255, 198,  72),  0.16f },
+            { "1-2",   1.0,  2.0, "1-2:",  ccc3(255, 118,  92),  0.23f },
+            { "0-1",   0.0,  1.0, "0-1:",  ccc3(255,  86, 138),  0.32f }
         };
         for (auto const& b : raw) {
-            double lo = b.lo * scale;
-            double hi = (b.hi > 1e6) ? 1e9 : (b.hi * scale);
-            std::string lbl = (b.hi > 1e6)
-                ? fmt::format("{}+:", fmtNum(lo))
-                : fmt::format("{}-{}:", fmtNum(lo), fmtNum(hi));
             std::string desc = (b.hi > 1e6)
-                ? fmt::format("{}+ FRAMES", fmtNum(lo))
-                : fmt::format("{}-{} FRAMES {}", fmtNum(lo), fmtNum(hi), hzDescStr(lo, hi));
-            tiers.push_back({ b.key, lbl, desc, msRangeStr(lo, hi), lo, hi, b.col, b.pitch });
+                ? fmt::format("{} FRAMES", b.key)
+                : fmt::format("{} FRAMES {}", b.key, hzDescStr(b.lo, b.hi));
+            tiers.push_back({ b.key, b.lbl, desc, msRangeStr(b.lo, b.hi), b.lo, b.hi, b.col, b.pitch });
         }
     } else {
-        struct RawDisc { const char* key; double lo; double hi; const char* lbl; ccColor3B col; float pitch; };
+        struct RawDisc { const char* key; double lo; double hi; double dispLo; double dispHi; const char* lbl; ccColor3B col; float pitch; };
         const RawDisc raw[7] = {
-            { "9-12", 9.0, 1e9,  "9-12:", ccc3(122, 160, 255), -0.10f },
-            { "7-8",  7.0, 9.0,  "7-8:",  ccc3( 96, 220, 255), -0.04f },
-            { "5-6",  5.0, 7.0,  "5-6:",  ccc3(106, 240, 150),  0.02f },
-            { "4",    4.0, 5.0,  "4:",    ccc3(222, 246, 112),  0.08f },
-            { "3",    3.0, 4.0,  "3:",    ccc3(255, 224,  88),  0.14f },
-            { "2",    2.0, 3.0,  "2:",    ccc3(255, 156,  84),  0.22f },
-            { "1",    0.0, 2.0,  "1:",    ccc3(255,  92, 112),  0.32f }
+            { "9-12", 9.0, 1e9,  9.0, 12.0, "9-12:", ccc3(122, 160, 255), -0.10f },
+            { "7-8",  7.0, 9.0,  7.0,  8.0, "7-8:",  ccc3( 96, 220, 255), -0.04f },
+            { "5-6",  5.0, 7.0,  5.0,  6.0, "5-6:",  ccc3(106, 240, 150),  0.02f },
+            { "4",    4.0, 5.0,  4.0,  4.0, "4:",    ccc3(222, 246, 112),  0.08f },
+            { "3",    3.0, 4.0,  3.0,  3.0, "3:",    ccc3(255, 224,  88),  0.14f },
+            { "2",    2.0, 3.0,  2.0,  2.0, "2:",    ccc3(255, 156,  84),  0.22f },
+            { "1",    0.0, 2.0,  0.0,  1.0, "1:",    ccc3(255,  92, 112),  0.32f }
         };
         for (auto const& b : raw) {
-            double lo = b.lo * scale;
-            double hi = (b.hi > 1e6) ? 1e9 : (b.hi * scale);
-            std::string lbl = (std::fabs(scale - 1.0) < 0.05)
-                ? std::string(b.lbl)
-                : ((b.hi > 1e6) ? fmt::format("{}+:", fmtNum(lo)) : fmt::format("{}-{}:", fmtNum(lo), fmtNum(hi)));
-            std::string desc = fmt::format("{} FRAMES {}", lbl.substr(0, lbl.size() - 1), hzDescStr(lo, hi));
-            tiers.push_back({ b.key, lbl, desc, msRangeStr(lo, hi), lo, hi, b.col, b.pitch });
+            std::string desc = fmt::format("{} FRAMES {}", b.key, hzDescStr(b.dispLo, b.dispHi));
+            tiers.push_back({ b.key, b.lbl, desc, msRangeStr(b.dispLo, b.dispHi), b.lo, b.hi, b.col, b.pitch });
         }
     }
     return tiers;
@@ -312,7 +297,6 @@ inline double framesToHz(double frames, double refFps) {
     return 1.0 / sec;
 }
 
-// Raw Precision difficulty weight per click (exponentially higher on tight frame windows!)
 inline double clickPrecisionWeight(double ms) {
     double clampedMs = std::max(0.5, ms);
     return std::pow(18.0 / clampedMs, 1.45);

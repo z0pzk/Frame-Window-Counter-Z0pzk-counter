@@ -49,9 +49,7 @@ private:
         if (!out.is_open()) return;
         out << "# FWC Saved Level Total Raw Precision: levelKey|totalDifficulty\n";
         for (auto const& [k, v] : m_totals) {
-            if (v > 0.01) {
-                out << k << "|" << v << "\n";
-            }
+            if (v > 0.01) out << k << "|" << v << "\n";
         }
     }
 

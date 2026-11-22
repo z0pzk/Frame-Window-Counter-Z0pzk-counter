@@ -25,6 +25,11 @@ using namespace geode::prelude;
 
 namespace {
 
+struct TrackedObjRef {
+    GameObject* ptr = nullptr;
+    fwc::sim::ObjKind kind = fwc::sim::ObjKind::Solid;
+};
+
 struct RecordedClick {
     float x = 0.0f;
     float y = 30.0f;
@@ -40,25 +45,15 @@ struct PendingClick {
     int ticksLeft = 2;
 };
 
-struct PlayerPhysicsSnapshot {
-    bool valid = false;
-    float x = 0.0f;
-    float y = 0.0f;
-    float vy = 0.0f;
-    float prevDy = 0.0f;
-    bool onGround = true;
-    bool upsideDown = false;
-    bool isWave = false;
-};
-
 enum class ScanPhase : int {
     Idle = 0,
     ApproachCheckpoint = 1,
     MeasureBaseline = 2,
-    TestSkip = 3,
-    TestLate = 4,
-    TestEarly = 5,
-    Done = 6
+    FindAnchor = 3,
+    TestSkip = 4,
+    TestLate = 5,
+    TestEarly = 6,
+    Done = 7
 };
 
 template <typename P>
@@ -78,6 +73,34 @@ bool isPlayerHoldingJump(P* p) {
         return static_cast<bool>(p->m_isHolding);
     } else {
         return false;
+    }
+}
+
+template <typename Obj>
+bool isObjectDisabledOrPassable(Obj* obj) {
+    if (!obj) return true;
+    if constexpr (requires { static_cast<bool>(obj->m_isGroupDisabled); }) {
+        if (obj->m_isGroupDisabled) return true;
+    }
+    if constexpr (requires { static_cast<bool>(obj->m_isDisabled); }) {
+        if (obj->m_isDisabled) return true;
+    }
+    if constexpr (requires { static_cast<bool>(obj->m_isPassable); }) {
+        if (obj->m_isPassable) return true;
+    }
+    if constexpr (requires { static_cast<bool>(obj->m_isNoTouch); }) {
+        if (obj->m_isNoTouch) return true;
+    }
+    return false;
+}
+
+template <typename Obj>
+int safeObjectID(Obj* obj) {
+    if (!obj) return 0;
+    if constexpr (requires { static_cast<int>(obj->m_objectID); }) {
+        return static_cast<int>(obj->m_objectID);
+    } else {
+        return 0;
     }
 }
 
@@ -101,6 +124,16 @@ bool safeCreateAndStoreCheckpoint(PL* pl) {
         return true;
     }
     return false;
+}
+
+template <typename PL>
+void safeTrimCheckpointsToOne(PL* pl) {
+    if (!pl) return;
+    if constexpr (requires { pl->m_checkpointArray; pl->removeLastCheckpoint(); }) {
+        while (pl->m_checkpointArray && pl->m_checkpointArray->count() > 1) {
+            pl->removeLastCheckpoint();
+        }
+    }
 }
 
 template <typename PL>
@@ -158,7 +191,9 @@ class $modify(FWCPlayLayer, PlayLayer) {
         fwc::HudOverlay* overlay = nullptr;
         std::string levelName;
         std::string levelKey;
-        std::vector<fwc::sim::SpatialObj> spatialCache;
+
+        std::vector<TrackedObjRef> liveObjects;
+        std::vector<GameObject*> dBlockObjects;
         std::vector<float> hazardXSorted;
         bool objectsIndexed = false;
 
@@ -170,7 +205,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
         bool prevHolding[2] = { false, false };
         uint64_t lastHookTick[2][2] = { { 0, 0 }, { 0, 0 } };
-        PlayerPhysicsSnapshot physSnap[2];
         bool isDeadThisAttempt = false;
         bool completedSavedThisAttempt = false;
         std::vector<PendingClick> pendingClicks;
@@ -179,14 +213,13 @@ class $modify(FWCPlayLayer, PlayLayer) {
         std::vector<RecordedClick> currentRun;
         std::vector<RecordedClick> savedRun;
 
-        // Built-in Renderer state
         bool isRendering = false;
         int outroFramesLeft = 0;
 
-        // Real-Engine Pathfinder Scanner state
         bool isScanning = false;
         bool scanProbeDied = false;
         bool wasPracticeBeforeScan = false;
+        bool wasAutoCpBeforeScan = false;
         ScanPhase scanPhase = ScanPhase::Idle;
 
         std::vector<RecordedClick> scanClicks;
@@ -197,8 +230,11 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
         int probeTick = 0;
         int baseClickTick = 0;
+        int anchorDelta = 0;
+        int anchorSearchIdx = 0;
         int maxApproachTicks = 480;
         float baseEndX = 0.0f;
+        float bestAnchorEndX = 0.0f;
         CCPoint baseClickPos = ccp(0.0f, 30.0f);
         bool targetFiredThisProbe = false;
 
@@ -260,17 +296,24 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
     void ensureObjectsIndexed() {
         auto& f = *m_fields.self();
-        if (f.objectsIndexed && !f.spatialCache.empty()) return;
+        if (f.objectsIndexed && (!f.liveObjects.empty() || !f.dBlockObjects.empty())) return;
         if (!m_objects || m_objects->count() == 0) return;
 
-        f.spatialCache.clear();
+        f.liveObjects.clear();
+        f.dBlockObjects.clear();
         f.hazardXSorted.clear();
-        f.spatialCache.reserve(m_objects->count() / 2);
+        f.liveObjects.reserve(m_objects->count() / 2);
 
         for (auto* obj : CCArrayExt<GameObject*>(m_objects)) {
             if (!obj) continue;
-            auto t = obj->m_objectType;
 
+            int objId = safeObjectID(obj);
+            if (objId == 1814) {
+                f.dBlockObjects.push_back(obj);
+                continue;
+            }
+
+            auto t = obj->m_objectType;
             fwc::sim::ObjKind kind = fwc::sim::ObjKind::Solid;
             bool keep = false;
 
@@ -300,50 +343,77 @@ class $modify(FWCPlayLayer, PlayLayer) {
             }
 
             if (!keep) continue;
+            f.liveObjects.push_back({ obj, kind });
+
+            if (kind == fwc::sim::ObjKind::Hazard || fwc::sim::isOrbKind(kind)) {
+                f.hazardXSorted.push_back(obj->getPositionX());
+            }
+        }
+
+        std::sort(f.hazardXSorted.begin(), f.hazardXSorted.end());
+        f.objectsIndexed = true;
+    }
+
+    void gatherLiveLocalSlice(float xMin, float xMax, float yCenter, std::vector<fwc::sim::SpatialObj>& out) {
+        auto& f = *m_fields.self();
+        out.clear();
+
+        std::vector<fwc::sim::SpatialObj> activeDBlocks;
+        for (auto* dobj : f.dBlockObjects) {
+            if (!dobj || isObjectDisabledOrPassable(dobj)) continue;
+            float ox = dobj->getPositionX();
+            if (ox < xMin - 60.0f || ox > xMax + 60.0f) continue;
+            float oy = dobj->getPositionY();
+            if (std::fabs(oy - yCenter) > 360.0f) continue;
+
+            CCRect r = dobj->getObjectRect();
+            if (r.size.width <= 0.05f || r.size.height <= 0.05f) continue;
+            fwc::sim::SpatialObj ds;
+            ds.minX = r.getMinX() - 4.0f;
+            ds.maxX = r.getMaxX() + 4.0f;
+            ds.minY = r.getMinY() - 4.0f;
+            ds.maxY = r.getMaxY() + 4.0f;
+            ds.kind = fwc::sim::ObjKind::DBlock;
+            activeDBlocks.push_back(ds);
+            out.push_back(ds);
+        }
+
+        for (auto const& ref : f.liveObjects) {
+            GameObject* obj = ref.ptr;
+            if (!obj || isObjectDisabledOrPassable(obj)) continue;
+
+            float ox = obj->getPositionX();
+            if (ox < xMin - 45.0f || ox > xMax + 45.0f) continue;
+            float oy = obj->getPositionY();
+            if (std::fabs(oy - yCenter) > 340.0f) continue;
 
             CCRect r = obj->getObjectRect();
             if (r.size.width <= 0.05f || r.size.height <= 0.05f) continue;
+            if (r.getMaxX() < xMin || r.getMinX() > xMax) continue;
 
             fwc::sim::SpatialObj s;
             s.minX = r.getMinX();
             s.maxX = r.getMaxX();
             s.minY = r.getMinY();
             s.maxY = r.getMaxY();
-            s.kind = kind;
-            if (kind == fwc::sim::ObjKind::Slope) {
+            s.kind = ref.kind;
+            if (ref.kind == fwc::sim::ObjKind::Slope) {
                 s.slopeType = computeSlopeType(obj);
             }
-            f.spatialCache.push_back(s);
 
-            if (kind == fwc::sim::ObjKind::Hazard || fwc::sim::isOrbKind(kind)) {
-                f.hazardXSorted.push_back(r.getMidX());
+            if ((ref.kind == fwc::sim::ObjKind::Solid || ref.kind == fwc::sim::ObjKind::Slope) && !activeDBlocks.empty()) {
+                for (auto const& db : activeDBlocks) {
+                    if (fwc::sim::rectOverlaps(s.minX, s.maxX, s.minY, s.maxY, db)) {
+                        s.hasDBlock = true;
+                        break;
+                    }
+                }
             }
-        }
-
-        std::sort(f.spatialCache.begin(), f.spatialCache.end(), [](fwc::sim::SpatialObj const& a, fwc::sim::SpatialObj const& b) {
-            return a.minX < b.minX;
-        });
-        std::sort(f.hazardXSorted.begin(), f.hazardXSorted.end());
-        f.objectsIndexed = true;
-    }
-
-    void gatherLocalSlice(float xMin, float xMax, std::vector<fwc::sim::SpatialObj>& out) {
-        auto const& cache = m_fields->spatialCache;
-        out.clear();
-        if (cache.empty()) return;
-
-        auto it = std::lower_bound(
-            cache.begin(), cache.end(), xMin - 90.0f,
-            [](fwc::sim::SpatialObj const& a, float val) { return a.minX < val; }
-        );
-        for (; it != cache.end() && it->minX <= xMax; ++it) {
-            if (it->maxX >= xMin) {
-                out.push_back(*it);
-            }
+            out.push_back(s);
         }
     }
 
-    double computeAutoWindowFrames(PlayerObject* player, bool isPress, bool forceOnGround = false) {
+    double computeAutoWindowFrames(PlayerObject* player, bool isPress) {
         auto& f = *m_fields.self();
         ensureObjectsIndexed();
         if (!player) return -1.0;
@@ -364,11 +434,11 @@ class $modify(FWCPlayLayer, PlayLayer) {
         p.isBall = player->m_isBall;
         p.isUfo = player->m_isBird;
         p.isSpider = player->m_isSpider;
-        p.onGround = forceOnGround ? true : player->m_isOnGround;
+        p.onGround = player->m_isOnGround;
         p.isPress = isPress;
 
         std::vector<fwc::sim::SpatialObj> local;
-        gatherLocalSlice(p.x0 - 150.0f, p.x0 + p.vx * 0.54f + 130.0f, local);
+        gatherLiveLocalSlice(p.x0 - 150.0f, p.x0 + p.vx * 0.54f + 130.0f, p.y0, local);
 
         return fwc::sim::solveAutoWindowFrames(p, local, static_cast<double>(f.cfg.refFps));
     }
@@ -420,7 +490,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
     }
 
-    void handleResolvedClick(PlayerObject* player, bool down, bool isPlayer1, bool fromHook, bool forceOnGround = false) {
+    void handleResolvedClick(PlayerObject* player, bool down, bool isPlayer1, bool fromHook) {
         auto& f = *m_fields.self();
         if (!f.cfg.enabled || f.isScanning || f.isDeadThisAttempt) return;
         if (!player) player = isPlayer1 ? m_player1 : m_player2;
@@ -433,7 +503,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
             f.lastHookTick[pIdx][dIdx] = f.updateTick;
             f.prevHolding[pIdx] = down;
         } else {
-            // Skip if handleButton ALREADY caught this click on this or previous tick!
             if (f.updateTick <= f.lastHookTick[pIdx][dIdx] + 2) return;
             f.lastHookTick[pIdx][dIdx] = f.updateTick;
         }
@@ -441,7 +510,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         recordInputForScan(player, down, isPlayer1);
 
         if (f.cfg.mode == fwc::CounterMode::Auto || f.cfg.captureToManual) {
-            double estFrames = computeAutoWindowFrames(player, down, forceOnGround);
+            double estFrames = computeAutoWindowFrames(player, down);
             if (estFrames < 0.0) return;
 
             auto pos = player->getPosition();
@@ -451,70 +520,11 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
             if (f.cfg.mode == fwc::CounterMode::Auto) {
                 double hf = hazardFractionAt(pos.x);
-                if (f.isRendering) {
-                    // During render, defer 1 frame (clean & exact)
-                    f.pendingClicks.push_back({ pos, estFrames, hf, 1 });
-                } else {
-                    f.pendingClicks.push_back({ pos, estFrames, hf, 2 });
-                }
+                f.pendingClicks.push_back({ pos, estFrames, hf, f.isRendering ? 1 : 2 });
             }
         }
     }
 
-    // Universal Physics-Edge Fallback Detector: catches clicks from ANY bot/renderer even if it bypasses handleButton!
-    void detectPhysicsFallbackClicks(PlayerObject* p, bool isP1) {
-        if (!p || p->m_isDead) return;
-        auto& f = *m_fields.self();
-        int idx = isP1 ? 0 : 1;
-        auto& snap = f.physSnap[idx];
-
-        CCPoint pos = p->getPosition();
-        float curVy = static_cast<float>(p->m_yVelocity);
-        bool curGround = p->m_isOnGround;
-        bool curUp = p->m_isUpsideDown;
-        bool curWave = p->m_isDart;
-        float curDy = snap.valid ? (pos.y - snap.y) : 0.0f;
-        float gravSign = curUp ? -1.0f : 1.0f;
-
-        if (snap.valid && (pos.x - snap.x) > 0.05f && (pos.x - snap.x) < 40.0f) {
-            // 1) Hold-button state fallback (when binding supports m_holdingButtons)
-            bool curHold = isPlayerHoldingJump(p);
-            if (curHold != f.prevHolding[idx]) {
-                f.prevHolding[idx] = curHold;
-                handleResolvedClick(p, curHold, isP1, false);
-            }
-
-            // 2) Pure physics impulse fallback (works even if bot bypasses handleButton AND m_holdingButtons!)
-            if (curWave && snap.isWave && curUp == snap.upsideDown) {
-                if (snap.prevDy * gravSign < -0.25f && curDy * gravSign > 0.25f) {
-                    handleResolvedClick(p, true, isP1, false);
-                } else if (snap.prevDy * gravSign > 0.25f && curDy * gravSign < -0.25f) {
-                    handleResolvedClick(p, false, isP1, false);
-                }
-            } else if (p->m_isBall || p->m_isSpider) {
-                if (curUp != snap.upsideDown && snap.onGround) {
-                    handleResolvedClick(p, true, isP1, false, true);
-                }
-            } else if (!curWave && !p->m_isShip && !p->m_isSwing) {
-                if (snap.onGround && !curGround && (curVy * gravSign > 5.0f)) {
-                    handleResolvedClick(p, true, isP1, false, true);
-                } else if (!snap.onGround && ((curVy - snap.vy) * gravSign > 5.2f)) {
-                    handleResolvedClick(p, true, isP1, false, false);
-                }
-            }
-        }
-
-        snap.valid = true;
-        snap.x = pos.x;
-        snap.y = pos.y;
-        snap.vy = curVy;
-        snap.prevDy = curDy;
-        snap.onGround = curGround;
-        snap.upsideDown = curUp;
-        snap.isWave = curWave;
-    }
-
-    // Unified per-frame simulation & overlay step (runs safely from update OR postUpdate without ever double-running!)
     void runFramePostStep(float dt) {
         auto& f = *m_fields.self();
         if (!f.cfg.enabled || f.isScanning || dt <= 0.0f) return;
@@ -544,8 +554,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
             if (dx < -15.0f) {
                 f.isDeadThisAttempt = false;
                 f.pendingClicks.clear();
-                f.physSnap[0].valid = false;
-                f.physSnap[1].valid = false;
                 f.prevHolding[0] = isPlayerHoldingJump(m_player1);
                 f.prevHolding[1] = isPlayerHoldingJump(m_player2);
                 fwc::MarkerStore::get().resetTriggersAfter(curX);
@@ -564,7 +572,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
             f.prevPlayerX = curX;
 
             if (!f.isDeadThisAttempt && !m_player1->m_isDead) {
-                // Flush confirmed non-fatal Auto clicks
                 for (size_t k = 0; k < f.pendingClicks.size(); ) {
                     f.pendingClicks[k].ticksLeft--;
                     if (f.pendingClicks[k].ticksLeft <= 0) {
@@ -576,13 +583,20 @@ class $modify(FWCPlayLayer, PlayLayer) {
                     }
                 }
 
-                // Universal bot/renderer click fallback (catches Silicate/xdBot/Eclipse even during render!)
-                detectPhysicsFallbackClicks(m_player1, true);
+                auto checkRealHoldEdge = [&](PlayerObject* p, bool isP1) {
+                    if (!p || p->m_isDead) return;
+                    int idx = isP1 ? 0 : 1;
+                    bool curHold = isPlayerHoldingJump(p);
+                    if (curHold != f.prevHolding[idx]) {
+                        f.prevHolding[idx] = curHold;
+                        handleResolvedClick(p, curHold, isP1, false);
+                    }
+                };
+                checkRealHoldEdge(m_player1, true);
                 if (m_player2 && m_player2->isVisible()) {
-                    detectPhysicsFallbackClicks(m_player2, false);
+                    checkRealHoldEdge(m_player2, false);
                 }
 
-                // Trigger Manual markers & manual comments
                 auto& markers = fwc::MarkerStore::get().markers();
                 for (auto& mk : markers) {
                     if (!mk.triggered && curX >= mk.x) {
@@ -597,7 +611,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
                     }
                 }
 
-                // Save exact level Total Difficulty upon level completion so next runs hit exact 100.00%!
                 if (!f.completedSavedThisAttempt && safeHasCompleted(this)) {
                     f.completedSavedThisAttempt = true;
                     if (f.overlay) {
@@ -618,34 +631,24 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
     }
 
-    // =========================================================================
-    // BUILT-IN LIGHTWEIGHT FFMPEG SHOWCASE RENDERER
-    // =========================================================================
     void toggleInternalRender() {
         auto& f = *m_fields.self();
         if (f.isRendering) {
             stopInternalRender(true);
             return;
         }
-        if (f.isScanning) {
-            finishOrCancelScan(false);
-        }
+        if (f.isScanning) finishOrCancelScan(false);
 
         f.cfg = fwc::ModConfig::load();
         auto& ren = fwc::InternalRenderer::get();
         if (!ren.start(f.levelName, f.cfg)) {
-            FLAlertLayer::create(
-                "Render Start Failed",
-                ren.lastError().c_str(),
-                "OK"
-            )->show();
+            FLAlertLayer::create("Render Start Failed", ren.lastError().c_str(), "OK")->show();
             return;
         }
 
         f.isRendering = true;
         f.outroFramesLeft = 0;
 
-        // Clean restart from Frame 0 with Intro Freeze ready!
         safeResetFromStart(this);
         if (f.overlay) {
             f.overlay->resetAttempt(m_objectLayer, true);
@@ -694,7 +697,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
         float fixedDt = 1.0f / static_cast<float>(std::max(24, ren.fps()));
 
         if (isIntroFreezing()) {
-            // Frame 0 frozen while Intro splash plays and fades cleanly into the MP4!
             if (f.overlay) f.overlay->stepIntroOnly(fixedDt);
         } else {
             runBaseUpdate(fixedDt);
@@ -702,7 +704,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
             f.updateTick++;
         }
 
-        // Hide the live status banner ONLY during the FBO capture so the MP4 stays 100% clean!
         if (f.overlay) f.overlay->setStatusBannerTemporaryHidden(true);
         bool ok = ren.captureFrame(this);
         if (f.overlay) {
@@ -718,7 +719,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
             return;
         }
 
-        // Auto-stop ~1 second after level completion!
         if (safeHasCompleted(this)) {
             if (f.outroFramesLeft == 0) {
                 f.outroFramesLeft = ren.fps();
@@ -731,9 +731,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
     }
 
-    // =========================================================================
-    // DIRECT-ENGINE PATHFINDER SCANNER (Scan Exact)
-    // =========================================================================
     void resetProbeState(std::function<void(bool, int, bool)> const& runBaseBtn) {
         auto& f = *m_fields.self();
         runBaseBtn(false, 1, true);
@@ -747,8 +744,10 @@ class $modify(FWCPlayLayer, PlayLayer) {
             f.replayFired[j] = true;
         }
         if (f.hasActiveCp) {
+            safeTrimCheckpointsToOne(this);
             PlayLayer::resetLevel();
         } else {
+            safeRemoveAllCheckpoints(this);
             safeResetFromStart(this);
         }
         f.scanProbeDied = false;
@@ -779,6 +778,11 @@ class $modify(FWCPlayLayer, PlayLayer) {
         f.pendingClicks.clear();
         f.scanPhase = ScanPhase::ApproachCheckpoint;
 
+        if (auto* gm = GameManager::sharedState()) {
+            f.wasAutoCpBeforeScan = gm->getGameVariable("0027");
+            gm->setGameVariable("0027", false);
+        }
+
         f.wasPracticeBeforeScan = m_isPracticeMode;
         if (!m_isPracticeMode) {
             this->togglePracticeMode(true);
@@ -801,6 +805,10 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
         f.isScanning = false;
         f.scanPhase = ScanPhase::Idle;
+
+        if (auto* gm = GameManager::sharedState()) {
+            gm->setGameVariable("0027", f.wasAutoCpBeforeScan);
+        }
 
         safeRemoveAllCheckpoints(this);
         if (!f.wasPracticeBeforeScan && m_isPracticeMode) {
@@ -845,8 +853,9 @@ class $modify(FWCPlayLayer, PlayLayer) {
         if (!f.isScanning) return;
 
         constexpr float kFixedDt = 1.0f / 240.0f;
-        constexpr int kLookaheadTicks = 150;
+        constexpr int kLookaheadTicks = 140;
         constexpr int kMaxShift = 24;
+        static constexpr int kAnchorOffsets[10] = { 1, -1, 2, -2, 3, -3, 4, -4, 5, -5 };
 
         auto tStart = std::chrono::steady_clock::now();
         int stepsDone = 0;
@@ -889,19 +898,19 @@ class $modify(FWCPlayLayer, PlayLayer) {
             };
 
             if (f.scanPhase == ScanPhase::ApproachCheckpoint) {
-                float targetCpX = std::max(0.0f, f.scanClicks[i].x - 75.0f);
-
-                if (targetCpX <= 12.0f) {
+                if (f.scanClicks[i].x < 350.0f) {
                     f.hasActiveCp = false;
                     f.cpStartIdx = 0;
-                    f.maxApproachTicks = 480;
+                    f.maxApproachTicks = 600;
                     f.scanPhase = ScanPhase::MeasureBaseline;
                     f.baseClickTick = -1;
+                    f.anchorDelta = 0;
                     f.baseEndX = 0.0f;
                     resetProbeState(runBaseBtn);
                     continue;
                 }
 
+                float targetCpX = std::max(0.0f, f.scanClicks[i].x - 80.0f);
                 if (curX >= targetCpX) {
                     safeRemoveAllCheckpoints(this);
                     bool stored = safeCreateAndStoreCheckpoint(this);
@@ -911,13 +920,14 @@ class $modify(FWCPlayLayer, PlayLayer) {
                         while (f.cpStartIdx < i && f.replayFired[f.cpStartIdx]) {
                             f.cpStartIdx++;
                         }
-                        f.maxApproachTicks = 420;
+                        f.maxApproachTicks = 450;
                     } else {
                         f.cpStartIdx = 0;
                         f.maxApproachTicks = std::max(600, static_cast<int>((f.scanClicks[i].x / 140.0f) * 240.0f) + 240);
                     }
                     f.scanPhase = ScanPhase::MeasureBaseline;
                     f.baseClickTick = -1;
+                    f.anchorDelta = 0;
                     f.baseEndX = 0.0f;
                     resetProbeState(runBaseBtn);
                     continue;
@@ -957,9 +967,60 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
                 if (finishedLookahead || didDie() || safeHasCompleted(this)) {
                     f.baseEndX = m_player1 ? m_player1->getPositionX() : curX;
+                    f.bestAnchorEndX = f.baseEndX;
+                    f.anchorDelta = 0;
                     if (f.baseClickTick < 0) f.baseClickTick = f.probeTick;
+
+                    if (didDie() && !safeHasCompleted(this)) {
+                        f.anchorSearchIdx = 0;
+                        f.scanPhase = ScanPhase::FindAnchor;
+                    } else {
+                        f.scanPhase = ScanPhase::TestSkip;
+                    }
+                    resetProbeState(runBaseBtn);
+                }
+            }
+            else if (f.scanPhase == ScanPhase::FindAnchor) {
+                if (f.anchorSearchIdx >= 10) {
+                    f.baseClickTick = std::max(0, f.baseClickTick + f.anchorDelta);
+                    f.baseEndX = f.bestAnchorEndX;
                     f.scanPhase = ScanPhase::TestSkip;
                     resetProbeState(runBaseBtn);
+                    continue;
+                }
+
+                int off = kAnchorOffsets[f.anchorSearchIdx];
+                int targetTick = f.baseClickTick + off;
+                if (targetTick < 0) {
+                    f.anchorSearchIdx++;
+                    continue;
+                }
+
+                if (!f.targetFiredThisProbe && f.probeTick == targetTick) {
+                    f.targetFiredThisProbe = true;
+                    f.replayFired[i] = true;
+                    runBaseBtn(f.scanClicks[i].down, 1, f.scanClicks[i].isP1);
+                }
+                fireReplayRange(f.cpStartIdx, f.scanClicks.size(), true);
+                runBaseUpdate(kFixedDt);
+                f.probeTick++;
+
+                bool doneTicks = (f.probeTick - targetTick) >= kLookaheadTicks;
+                if (didDie() || doneTicks || safeHasCompleted(this)) {
+                    float endX = m_player1 ? m_player1->getPositionX() : curX;
+                    if (!didDie() || safeHasCompleted(this)) {
+                        f.baseClickTick = targetTick;
+                        f.baseEndX = endX;
+                        f.scanPhase = ScanPhase::TestSkip;
+                        resetProbeState(runBaseBtn);
+                    } else {
+                        if (endX > f.bestAnchorEndX) {
+                            f.bestAnchorEndX = endX;
+                            f.anchorDelta = off;
+                        }
+                        f.anchorSearchIdx++;
+                        resetProbeState(runBaseBtn);
+                    }
                 }
             }
             else if (f.scanPhase == ScanPhase::TestSkip) {
@@ -1126,9 +1187,8 @@ class $modify(FWCPlayLayer, PlayLayer) {
     }
 
     void onQuit() {
-        if (m_fields->isRendering) {
-            stopInternalRender(false);
-        }
+        if (m_fields->isScanning) finishOrCancelScan(false);
+        if (m_fields->isRendering) stopInternalRender(false);
         PlayLayer::onQuit();
     }
 
@@ -1150,8 +1210,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
         f.currentRun.clear();
         f.pendingClicks.clear();
         f.recentClicks.clear();
-        f.physSnap[0].valid = false;
-        f.physSnap[1].valid = false;
 
         f.cfg = fwc::ModConfig::load();
         f.simTime = 0.0;
@@ -1191,9 +1249,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
 class $modify(FWCGJBaseGameLayer, GJBaseGameLayer) {
     static void onModify(auto& self) {
-        // High priority (-50000) on update so Intro Freeze & Built-in Render run BEFORE bots (Silicate/xdBot/Eclipse)!
         (void)self.setHookPriority("GJBaseGameLayer::update", -50000);
-        // Late priority (10000) on handleButton to receive clicks injected by bots!
         (void)self.setHookPriority("GJBaseGameLayer::handleButton", 10000);
     }
 
@@ -1216,14 +1272,12 @@ class $modify(FWCGJBaseGameLayer, GJBaseGameLayer) {
                 return;
             }
 
-            // Intro Frame-0 Freeze: holds physics & bots completely frozen at Frame 0 until Intro finishes!
             if (fwcPl->isIntroFreezing()) {
                 fwcPl->stepIntroFreeze(dt);
                 return;
             }
 
             GJBaseGameLayer::update(dt);
-            // Also guarantee post-step runs even if an external renderer bypasses PlayLayer::postUpdate!
             fwcPl->runFramePostStep(dt);
             fwcPl->bumpUpdateTick();
             return;
@@ -1317,12 +1371,8 @@ class $modify(FWCPauseLayer, PauseLayer) {
 
         if (auto* pl = PlayLayer::get()) {
             auto* fwcPl = static_cast<FWCPlayLayer*>(pl);
-            if (fwcPl->isScanning()) {
-                fwcPl->finishOrCancelScan(false);
-            }
-            if (fwcPl->isRendering()) {
-                fwcPl->stopInternalRender(true);
-            }
+            if (fwcPl->isScanning()) fwcPl->finishOrCancelScan(false);
+            if (fwcPl->isRendering()) fwcPl->stopInternalRender(true);
         }
 
         Ref<PauseLayer> selfRef = this;

@@ -8,9 +8,9 @@
     },
     "id": "z0pzk.frame-window-counter",
     "name": "Frame Window Counter",
-    "version": "v9.0.0",
+    "version": "v10.1.0",
     "developer": "z0pzk",
-    "description": "Exact GD 2.2 Frame & CBF Window Counter with Difficulty % calculation, Intro Frame-0 Freeze, Built-in Lightweight FFmpeg Renderer, Universal Bot & Renderer Click Detection, Scan Exact Pathfinder, bright additive glow, and per-tier sounds.",
+    "description": "Frame & CBF Window Counter v10.1 with unscaled native Ref-FPS tiers (1F = 1 frame at any chosen FPS), live Move/Toggle/D-Block object reading, Explicit Euler GD 2.2 physics, auto-anchor Scan Exact pathfinder, customizable HUD scale, one-click FFmpeg downloader, built-in showcase renderer, and per-tier sounds.",
     "resources": {
         "files": [
             "resources/*.wav",
@@ -90,6 +90,13 @@
             "type": "bool",
             "name": "Show Top-Left Tier Table",
             "default": true
+        },
+        "hud-scale": {
+            "type": "float",
+            "name": "HUD Text Scale",
+            "default": 1.35,
+            "min": 0.7,
+            "max": 2.0
         },
         "show-ms-hz": {
             "type": "bool",

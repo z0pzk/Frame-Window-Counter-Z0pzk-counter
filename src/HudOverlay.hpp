@@ -35,7 +35,9 @@ private:
 
     CCNode* m_tableRoot = nullptr;
     std::vector<TierRowUI> m_rows;
-    float m_countX = 76.0f;
+    float m_countX = 96.0f;
+    float m_rowFontScale = 0.50f;
+    float m_glowBaseScale = 0.60f;
 
     CCLabelBMFont* m_lblMs = nullptr;
     CCLabelBMFont* m_lblHz = nullptr;
@@ -58,12 +60,11 @@ private:
     bool m_introActive = false;
     bool m_introShownOnce = false;
 
-    // Difficulty % state (NEVER tied linearly to level X%!)
     double m_lastMs = 0.0;
     double m_lastHz = 0.0;
     double m_rawPrecision = 0.0;
-    double m_knownTotalDifficulty = 0.0; // From Manual/Scan markers OR previous completed run
-    double m_displayDiffPct = 0.0;       // Only updates when a click occurs (or hits 100% on completion)
+    double m_knownTotalDifficulty = 0.0;
+    double m_displayDiffPct = 0.0;
 
     double m_lastCalloutTime = -10.0;
 
@@ -144,10 +145,21 @@ private:
 
         m_tiers = buildTiers(m_cfg.tableStyle, static_cast<double>(m_cfg.refFps));
 
+        float hs = std::clamp(m_cfg.hudScale, 0.7f, 2.0f);
+        float bottomReserve = m_cfg.showBottomStats ? (44.0f * std::min(1.35f, hs) + 12.0f) : 14.0f;
+        float msReserve = m_cfg.showMsHz ? (36.0f * std::min(1.30f, hs) + 8.0f) : 0.0f;
+        float availTableH = std::max(80.0f, winSize.height - 20.0f - bottomReserve - msReserve);
+        float maxRowStep = availTableH / static_cast<float>(std::max<size_t>(1, m_tiers.size()));
+
+        float rowStep = std::min(maxRowStep, ((m_tiers.size() > 7) ? 16.5f : 19.0f) * hs);
+        float effScale = std::min(hs, (rowStep / 15.0f));
+
+        m_rowFontScale = 0.39f * effScale;
+        m_glowBaseScale = 0.46f * effScale;
+
         float leftX = 12.0f;
-        m_countX = (m_cfg.tableStyle == TableStyle::TopDown24) ? 76.0f : 64.0f;
-        float topY = winSize.height - 16.0f;
-        float rowStep = (m_tiers.size() > 7) ? 16.0f : 18.0f;
+        m_countX = leftX + ((m_cfg.tableStyle == TableStyle::TopDown24) ? 68.0f : 56.0f) * effScale;
+        float topY = winSize.height - (13.0f + 4.0f * effScale);
         float curY = topY;
 
         if (m_cfg.showTierTable) {
@@ -161,22 +173,22 @@ private:
 
                 row.nameLbl = CCLabelBMFont::create(t.label.c_str(), "bigFont.fnt");
                 row.nameLbl->setAnchorPoint({ 0.0f, 0.5f });
-                row.nameLbl->setScale(0.38f);
+                row.nameLbl->setScale(m_rowFontScale);
                 row.nameLbl->setColor(t.color);
                 row.nameLbl->setPosition({ leftX, curY });
                 m_tableRoot->addChild(row.nameLbl, 2);
 
                 row.glowSpr = makeGlowSprite();
                 if (row.glowSpr) {
-                    row.glowSpr->setPosition({ m_countX + 7.0f, curY });
-                    row.glowSpr->setScale(0.45f);
+                    row.glowSpr->setPosition({ m_countX + 8.0f * effScale, curY });
+                    row.glowSpr->setScale(m_glowBaseScale);
                     row.glowSpr->setOpacity(0);
                     m_tableRoot->addChild(row.glowSpr, 1);
                 }
 
                 row.countLbl = CCLabelBMFont::create(fmt::format("{}", row.count).c_str(), "bigFont.fnt");
                 row.countLbl->setAnchorPoint({ 0.0f, 0.5f });
-                row.countLbl->setScale(0.38f);
+                row.countLbl->setScale(m_rowFontScale);
                 row.countLbl->setColor(t.color);
                 row.countLbl->setPosition({ m_countX, curY });
                 m_tableRoot->addChild(row.countLbl, 2);
@@ -187,36 +199,41 @@ private:
         }
 
         if (m_cfg.showMsHz) {
-            float msY = m_cfg.showTierTable ? (curY - 6.0f) : (winSize.height - 20.0f);
+            float msScale = 0.41f * std::min(1.45f, effScale);
+            float msStep = 17.5f * std::min(1.45f, effScale);
+            float msY = m_cfg.showTierTable ? (curY - 5.0f) : (winSize.height - 22.0f);
 
             m_lblMs = CCLabelBMFont::create(fmt::format("{:.2f}ms", m_lastMs).c_str(), "bigFont.fnt");
             m_lblMs->setAnchorPoint({ 0.0f, 0.5f });
-            m_lblMs->setScale(0.40f);
+            m_lblMs->setScale(msScale);
             m_lblMs->setColor(ccc3(255, 255, 255));
             m_lblMs->setPosition({ leftX, msY });
             m_tableRoot->addChild(m_lblMs, 2);
 
             m_lblHz = CCLabelBMFont::create(fmt::format("{:.0f}Hz", std::min(m_lastHz, 9999.0)).c_str(), "bigFont.fnt");
             m_lblHz->setAnchorPoint({ 0.0f, 0.5f });
-            m_lblHz->setScale(0.40f);
+            m_lblHz->setScale(msScale);
             m_lblHz->setColor(ccc3(255, 255, 255));
-            m_lblHz->setPosition({ leftX, msY - 17.0f });
+            m_lblHz->setPosition({ leftX, msY - msStep });
             m_tableRoot->addChild(m_lblHz, 2);
         }
 
         if (m_cfg.showBottomStats) {
+            float botScale = 0.45f * std::min(1.40f, hs);
+            float botStep = 19.0f * std::min(1.35f, hs);
+
             m_lblPercent = CCLabelBMFont::create("0.00%", "bigFont.fnt");
             m_lblPercent->setAnchorPoint({ 0.0f, 0.5f });
-            m_lblPercent->setScale(0.44f);
+            m_lblPercent->setScale(botScale);
             m_lblPercent->setColor(ccc3(255, 255, 255));
-            m_lblPercent->setPosition({ leftX, 34.0f });
+            m_lblPercent->setPosition({ leftX, 14.0f + botStep });
             m_tableRoot->addChild(m_lblPercent, 2);
 
             m_lblScore = CCLabelBMFont::create("0.00", "bigFont.fnt");
             m_lblScore->setAnchorPoint({ 0.0f, 0.5f });
-            m_lblScore->setScale(0.44f);
+            m_lblScore->setScale(botScale);
             m_lblScore->setColor(ccc3(255, 255, 255));
-            m_lblScore->setPosition({ leftX, 15.0f });
+            m_lblScore->setPosition({ leftX, 14.0f });
             m_tableRoot->addChild(m_lblScore, 2);
             updateBottomNumbers();
         }
@@ -224,7 +241,7 @@ private:
         if (m_cfg.showWatermark && !m_cfg.watermarkText.empty()) {
             m_lblWatermark = CCLabelBMFont::create(m_cfg.watermarkText.c_str(), "bigFont.fnt");
             m_lblWatermark->setAnchorPoint({ 0.5f, 0.5f });
-            m_lblWatermark->setScale(0.32f);
+            m_lblWatermark->setScale(0.34f);
             m_lblWatermark->setColor(ccc3(255, 255, 255));
             m_lblWatermark->setOpacity(125);
             m_lblWatermark->setPosition({ winSize.width * 0.5f, winSize.height - 24.0f });
@@ -234,7 +251,7 @@ private:
         m_lblCallout = CCLabelBMFont::create("", "bigFont.fnt");
         m_lblCallout->setAnchorPoint({ 1.0f, 0.5f });
         m_lblCallout->setAlignment(kCCTextAlignmentRight);
-        m_lblCallout->setScale(0.38f);
+        m_lblCallout->setScale(0.42f);
         m_lblCallout->setColor(ccc3(255, 255, 255));
         m_lblCallout->setOpacity(0);
         m_lblCallout->setPosition({ winSize.width - 14.0f, winSize.height - 56.0f });
@@ -250,12 +267,8 @@ private:
         m_introActive = false;
 
         if (!m_cfg.enabled) return;
-        if (!forceShow) {
-            if (m_cfg.bannerMode == BannerMode::Off) return;
-            if (m_cfg.bannerMode == BannerMode::FirstOnly && m_introShownOnce && isReset) return;
-        } else {
-            if (m_cfg.bannerMode == BannerMode::Off) return;
-        }
+        if (m_cfg.bannerMode == BannerMode::Off) return;
+        if (!forceShow && m_cfg.bannerMode == BannerMode::FirstOnly && m_introShownOnce && isReset) return;
 
         m_introShownOnce = true;
 
@@ -263,7 +276,6 @@ private:
         m_introRoot = CCNode::create();
         this->addChild(m_introRoot, 40);
 
-        // Full black splash screen while Intro Freeze holds Frame 0!
         m_introBg = CCLayerColor::create(ccc4(0, 0, 0, 238), winSize.width, winSize.height);
         m_introRoot->addChild(m_introBg, 0);
 
@@ -436,7 +448,7 @@ public:
             r.glowTimer = 0.0f;
             if (r.countLbl) {
                 r.countLbl->setString("0");
-                r.countLbl->setScale(0.38f);
+                r.countLbl->setScale(m_rowFontScale);
             }
             if (r.glowSpr) r.glowSpr->setOpacity(0);
         }
@@ -476,7 +488,6 @@ public:
         m_calloutTotal = std::max(0.6f, m_cfg.commentFadeSec);
     }
 
-    // hazardFractionPassed is (hazards up to player X) / (total hazards in level) in [0.01 .. 1.0]
     void onClickTriggered(
         CCNode* worldParent,
         CCPoint levelPos,
@@ -489,13 +500,11 @@ public:
         if (!m_cfg.enabled) return;
         ensureWorldContainer(worldParent);
 
-        // Keep overlay & circles visible even if an external renderer hides other UI
         this->setVisible(true);
         if (m_worldContainer) m_worldContainer->setVisible(true);
 
         double fps = static_cast<double>(m_cfg.refFps);
         double displayFrames = resolveDisplayFrames(frames, m_cfg.cbfMode);
-        double rawMs = framesToMs(frames, fps);
         m_lastMs = framesToMs(displayFrames, fps);
         m_lastHz = framesToHz(displayFrames, fps);
 
@@ -505,13 +514,12 @@ public:
         int tierIdx = findTierIndex(m_tiers, displayFrames);
         auto const& tier = m_tiers[static_cast<size_t>(tierIdx)];
 
-        // 1) Update Tier Row + Bright Additive White Glow
         if (tierIdx >= 0 && tierIdx < static_cast<int>(m_rows.size())) {
             auto& row = m_rows[static_cast<size_t>(tierIdx)];
             row.count++;
             if (row.countLbl) {
                 row.countLbl->setString(fmt::format("{}", row.count).c_str());
-                row.countLbl->setScale(0.47f);
+                row.countLbl->setScale(m_rowFontScale * 1.24f);
                 float centerX = m_countX + row.countLbl->getScaledContentSize().width * 0.42f;
                 if (row.glowSpr) {
                     row.glowSpr->setPosition({ centerX, row.baseY });
@@ -520,33 +528,27 @@ public:
             row.glowTimer = 0.85f;
             if (row.glowSpr) {
                 row.glowSpr->setOpacity(255);
-                row.glowSpr->setScale(0.62f);
+                row.glowSpr->setScale(m_glowBaseScale * 1.38f);
             }
         }
 
-        // 2) Update ms & Hz
         if (m_lblMs) m_lblMs->setString(fmt::format("{:.2f}ms", m_lastMs).c_str());
         if (m_lblHz) m_lblHz->setString(fmt::format("{:.0f}Hz", std::min(m_lastHz, 9999.0)).c_str());
 
-        // 3) Difficulty-Based % & Raw Precision Score!
         double clickWeight = clickPrecisionWeight(m_lastMs);
         m_rawPrecision += clickWeight;
 
         if (m_knownTotalDifficulty > 0.05) {
-            // Exact share of total level difficulty!
             m_displayDiffPct = std::clamp((m_rawPrecision / m_knownTotalDifficulty) * 100.0, 0.0, 100.0);
         } else {
-            // First-ever attempt (not completed yet): estimate remaining difficulty from remaining hazard share!
             double hFrac = std::clamp(hazardFractionPassed, 0.02, 1.0);
             double estRemaining = (1.0 - hFrac) * std::max(m_rawPrecision / hFrac, 35.0);
             double estTotal = m_rawPrecision + estRemaining;
             double estPct = (estTotal > 1e-4) ? ((m_rawPrecision / estTotal) * 100.0) : 0.0;
-            // Monotonic rise purely on clicks (jumps big on tight 1F clicks, tiny on easy clicks!)
             m_displayDiffPct = std::clamp(std::max(m_displayDiffPct, estPct), 0.0, 99.95);
         }
         updateBottomNumbers();
 
-        // 4) Comments (Manual + clean non-numbered Auto Comments)
         if (!manualComment.empty()) {
             showCallout(manualComment, tier.color);
             m_lastCalloutTime = simTime;
@@ -557,7 +559,7 @@ public:
                     tier.color
                 );
                 m_lastCalloutTime = simTime;
-            } else if (rawMs <= 5.50 && (simTime - m_lastCalloutTime) > 1.2) {
+            } else if (frames <= 1.35 && (simTime - m_lastCalloutTime) > 1.2) {
                 double loEst = std::max(0.1, frames - 0.35);
                 double hiEst = frames + 0.35;
                 showCallout(
@@ -568,7 +570,6 @@ public:
             }
         }
 
-        // 5) Spawn STATIC Bold Circle directly in m_objectLayer
         auto* container = m_worldContainer.data();
         if (!m_cfg.showCircles || !container) return;
 
@@ -599,7 +600,7 @@ public:
             std::string numStr = formatCircleNumber(displayFrames, m_cfg.cbfMode);
             wc.label = CCLabelBMFont::create(numStr.c_str(), "bigFont.fnt");
             wc.label->setAnchorPoint({ 1.0f, 0.5f });
-            wc.label->setScale(0.44f * std::min(1.4f, sc));
+            wc.label->setScale(0.46f * std::min(1.4f, sc));
             wc.label->setColor(tier.color);
             wc.label->setOpacity(255);
             wc.label->setPosition(ccp(levelPos.x - 21.0f * sc, levelPos.y));
@@ -609,7 +610,6 @@ public:
         m_circles.push_back(wc);
     }
 
-    // Advance ONLY the Intro screen timer & fade (used while game is frozen on Frame 0!)
     void stepIntroOnly(float dt) {
         if (!m_introActive || !m_introRoot || dt <= 0.0f) return;
         m_introTimer += dt;
@@ -638,15 +638,15 @@ public:
                 if (r.glowSpr) {
                     float eased = p * (0.45f + 0.55f * p);
                     r.glowSpr->setOpacity(static_cast<GLubyte>(std::clamp(eased * 255.0f, 0.0f, 255.0f)));
-                    r.glowSpr->setScale(0.44f + 0.20f * p);
+                    r.glowSpr->setScale(m_glowBaseScale * (0.95f + 0.43f * p));
                 }
                 if (r.countLbl) {
                     float elapsed = 0.85f - r.glowTimer;
                     if (elapsed < 0.16f) {
                         float sp = elapsed / 0.16f;
-                        r.countLbl->setScale(0.47f - 0.09f * sp);
+                        r.countLbl->setScale(m_rowFontScale * (1.24f - 0.24f * sp));
                     } else {
-                        r.countLbl->setScale(0.38f);
+                        r.countLbl->setScale(m_rowFontScale);
                     }
                 }
             }
@@ -696,7 +696,6 @@ public:
             ++i;
         }
 
-        // If Intro Freeze is OFF, still fade the intro normally during gameplay
         if (!m_cfg.introFreeze && m_introActive) {
             stepIntroOnly(dt);
         }
