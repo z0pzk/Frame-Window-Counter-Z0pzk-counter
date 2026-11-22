@@ -210,7 +210,7 @@ private:
             m_lblMs->setPosition({ leftX, msY });
             m_tableRoot->addChild(m_lblMs, 2);
 
-            m_lblHz = CCLabelBMFont::create(fmt::format("{:.0f}Hz", std::min(m_lastHz, 9999.0)).c_str(), "bigFont.fnt");
+            m_lblHz = CCLabelBMFont::create(fmt::format("{:.0f}Hz", std::min(m_lastHz, 99999.0)).c_str(), "bigFont.fnt");
             m_lblHz->setAnchorPoint({ 0.0f, 0.5f });
             m_lblHz->setScale(msScale);
             m_lblHz->setColor(ccc3(255, 255, 255));
@@ -533,7 +533,7 @@ public:
         }
 
         if (m_lblMs) m_lblMs->setString(fmt::format("{:.2f}ms", m_lastMs).c_str());
-        if (m_lblHz) m_lblHz->setString(fmt::format("{:.0f}Hz", std::min(m_lastHz, 9999.0)).c_str());
+        if (m_lblHz) m_lblHz->setString(fmt::format("{:.0f}Hz", std::min(m_lastHz, 99999.0)).c_str());
 
         double clickWeight = clickPrecisionWeight(m_lastMs);
         m_rawPrecision += clickWeight;

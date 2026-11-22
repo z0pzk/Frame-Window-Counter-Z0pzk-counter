@@ -8,9 +8,9 @@
     },
     "id": "z0pzk.frame-window-counter",
     "name": "Frame Window Counter",
-    "version": "v10.1.0",
+    "version": "v10.2.0",
     "developer": "z0pzk",
-    "description": "Frame & CBF Window Counter v10.1 with unscaled native Ref-FPS tiers (1F = 1 frame at any chosen FPS), live Move/Toggle/D-Block object reading, Explicit Euler GD 2.2 physics, auto-anchor Scan Exact pathfinder, customizable HUD scale, one-click FFmpeg downloader, built-in showcase renderer, and per-tier sounds.",
+    "description": "Frame & CBF Window Counter v10.2 — rewritten Cube/Orb/Spider/Ball/UFO solver (fixes fake 1F on blue orb & cube spam, buffer clicks, last-frame clicks, Acheron 1st click, Slaughterhouse D-Block ID 1755, and Scan Exact wave lookahead).",
     "resources": {
         "files": [
             "resources/*.wav",

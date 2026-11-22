@@ -282,10 +282,10 @@ private:
             addCheckboxRow(m_contentNode, menu, "Auto Comments", m_cfg.showAutoComments, 105, rightX, topY - 156.0f);
 
             auto* tip = CCLabelBMFont::create(
-                "v10.1: Native 1/2/3... tiers for any Ref FPS (240, 360, 1000+), live Move/D-Block hitboxes.",
+                "v10.2: Rewritten Cube/Orb/Spider physics, exact speed, D-Block 1755, wave-safe Scan Exact.",
                 "chatFont.fnt"
             );
-            tip->setScale(0.51f);
+            tip->setScale(0.49f);
             tip->setColor(ccc3(195, 202, 214));
             tip->setPosition({ kPanelW * 0.5f, 24.0f });
             m_contentNode->addChild(tip, 3);

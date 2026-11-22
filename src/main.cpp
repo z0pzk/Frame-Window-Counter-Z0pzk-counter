@@ -36,6 +36,7 @@ struct RecordedClick {
     bool down = true;
     bool isP1 = true;
     bool releaseMatters = false;
+    bool isWave = false;
 };
 
 struct PendingClick {
@@ -55,6 +56,22 @@ enum class ScanPhase : int {
     TestEarly = 6,
     Done = 7
 };
+
+template <typename P>
+float resolveExactSpeedX(P* p, float fallbackVx) {
+    if (!p) return fallbackVx;
+    if constexpr (requires { static_cast<float>(p->m_playerSpeed); }) {
+        float sp = static_cast<float>(p->m_playerSpeed);
+        if (sp > 0.1f && sp < 3.0f) {
+            if (sp < 0.78f) return 251.16f; // 0.5x
+            if (sp < 0.98f) return 311.58f; // 1x
+            if (sp < 1.20f) return 387.42f; // 2x
+            if (sp < 1.45f) return 468.00f; // 3x
+            return 576.00f;                 // 4x
+        }
+    }
+    return std::clamp(fallbackVx, 180.0f, 950.0f);
+}
 
 template <typename P>
 bool isPlayerHoldingJump(P* p) {
@@ -307,8 +324,9 @@ class $modify(FWCPlayLayer, PlayLayer) {
         for (auto* obj : CCArrayExt<GameObject*>(m_objects)) {
             if (!obj) continue;
 
+            // True GD D-Block Object ID = 1755!
             int objId = safeObjectID(obj);
-            if (objId == 1814) {
+            if (objId == 1755) {
                 f.dBlockObjects.push_back(obj);
                 continue;
             }
@@ -362,9 +380,9 @@ class $modify(FWCPlayLayer, PlayLayer) {
         for (auto* dobj : f.dBlockObjects) {
             if (!dobj || isObjectDisabledOrPassable(dobj)) continue;
             float ox = dobj->getPositionX();
-            if (ox < xMin - 60.0f || ox > xMax + 60.0f) continue;
+            if (ox < xMin - 120.0f || ox > xMax + 120.0f) continue;
             float oy = dobj->getPositionY();
-            if (std::fabs(oy - yCenter) > 360.0f) continue;
+            if (std::fabs(oy - yCenter) > 400.0f) continue;
 
             CCRect r = dobj->getObjectRect();
             if (r.size.width <= 0.05f || r.size.height <= 0.05f) continue;
@@ -383,9 +401,9 @@ class $modify(FWCPlayLayer, PlayLayer) {
             if (!obj || isObjectDisabledOrPassable(obj)) continue;
 
             float ox = obj->getPositionX();
-            if (ox < xMin - 45.0f || ox > xMax + 45.0f) continue;
+            if (ox < xMin - 60.0f || ox > xMax + 60.0f) continue;
             float oy = obj->getPositionY();
-            if (std::fabs(oy - yCenter) > 340.0f) continue;
+            if (std::fabs(oy - yCenter) > 380.0f) continue;
 
             CCRect r = obj->getObjectRect();
             if (r.size.width <= 0.05f || r.size.height <= 0.05f) continue;
@@ -425,7 +443,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         p.y0 = pos.y;
         p.halfW = std::clamp(rect.size.width * 0.5f, 5.0f, 18.0f);
         p.halfH = std::clamp(rect.size.height * 0.5f, 5.0f, 18.0f);
-        p.vx = std::clamp(f.measuredSpeedX, 180.0f, 950.0f);
+        p.vx = resolveExactSpeedX(player, f.measuredSpeedX);
         p.vy0 = static_cast<float>(player->m_yVelocity) * 54.0f;
         p.upsideDown = player->m_isUpsideDown;
         p.mini = (player->m_vehicleSize < 0.8f);
@@ -438,7 +456,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         p.isPress = isPress;
 
         std::vector<fwc::sim::SpatialObj> local;
-        gatherLiveLocalSlice(p.x0 - 150.0f, p.x0 + p.vx * 0.54f + 130.0f, p.y0, local);
+        gatherLiveLocalSlice(p.x0 - 160.0f, p.x0 + p.vx * 0.58f + 150.0f, p.y0, local);
 
         return fwc::sim::solveAutoWindowFrames(p, local, static_cast<double>(f.cfg.refFps));
     }
@@ -483,7 +501,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
         bool relMatters = player->m_isDart || player->m_isShip || player->m_isRobot || player->m_isSwing;
         if (f.currentRun.size() < 3000) {
-            f.currentRun.push_back({ pos.x, pos.y, down, isPlayer1, relMatters });
+            f.currentRun.push_back({ pos.x, pos.y, down, isPlayer1, relMatters, player->m_isDart });
             if (f.currentRun.size() >= f.savedRun.size()) {
                 f.savedRun = f.currentRun;
             }
@@ -565,7 +583,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 if (dt > 1e-6f) {
                     float instSpeed = dx / dt;
                     if (instSpeed > 80.0f && instSpeed < 1600.0f) {
-                        f.measuredSpeedX = f.measuredSpeedX * 0.85f + instSpeed * 0.15f;
+                        f.measuredSpeedX = f.measuredSpeedX * 0.70f + instSpeed * 0.30f;
                     }
                 }
             }
@@ -853,7 +871,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
         if (!f.isScanning) return;
 
         constexpr float kFixedDt = 1.0f / 240.0f;
-        constexpr int kLookaheadTicks = 140;
         constexpr int kMaxShift = 24;
         static constexpr int kAnchorOffsets[10] = { 1, -1, 2, -2, 3, -3, 4, -4, 5, -5 };
 
@@ -886,6 +903,15 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
             size_t i = f.scanClickIdx;
             float curX = m_player1 ? m_player1->getPositionX() : 0.0f;
+            bool targetIsWave = f.scanClicks[i].isWave;
+            int kLookaheadTicks = targetIsWave ? 56 : 120;
+            float nextClickStopX = 1e9f;
+            for (size_t nxt = i + 1; nxt < f.scanClicks.size(); ++nxt) {
+                if (f.scanClicks[nxt].x > f.scanClicks[i].x + 12.0f) {
+                    nextClickStopX = f.scanClicks[nxt].x + (targetIsWave ? 4.0f : 14.0f);
+                    break;
+                }
+            }
 
             auto fireReplayRange = [&](size_t fromIdx, size_t toIdx, bool skipTarget) {
                 for (size_t j = fromIdx; j < toIdx && j < f.scanClicks.size(); ++j) {
@@ -1066,10 +1092,13 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 runBaseUpdate(kFixedDt);
                 f.probeTick++;
 
-                bool doneTicks = (f.probeTick - f.baseClickTick) >= kLookaheadTicks;
+                int minCheckTicks = targetIsWave ? 10 : 18;
+                bool passedNextClick = (f.probeTick - f.baseClickTick >= minCheckTicks) && (curX >= nextClickStopX);
+                bool doneTicks = ((f.probeTick - f.baseClickTick) >= kLookaheadTicks) || passedNextClick;
                 if (didDie() || doneTicks || safeHasCompleted(this)) {
                     float endX = m_player1 ? m_player1->getPositionX() : curX;
-                    bool survived = !didDie() && (endX >= f.baseEndX - 10.0f);
+                    float reqEndX = std::min(f.baseEndX - 10.0f, nextClickStopX - 6.0f);
+                    bool survived = !didDie() && (endX >= reqEndX);
 
                     if (f.scanPhase == ScanPhase::TestLate) {
                         if (survived && f.currentDelta < kMaxShift) {

@@ -199,35 +199,34 @@ inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
     auto msRangeStr = [&](double loF, double hiF) -> std::string {
         double loMs = (loF / fps) * 1000.0;
         double hiMs = (hiF / fps) * 1000.0;
-        if (hiF > 1e6) return fmt::format("(>{:.1f}ms)", loMs);
-        if (std::fabs(hiF - loF) < 0.05) return fmt::format("({:.2f}ms)", hiMs);
+        if (hiF > 1e6) return fmt::format("(>{:.2f}ms)", loMs);
         return fmt::format("({:.2f}-{:.2f}ms)", loMs, hiMs);
     };
     auto hzDescStr = [&](double loF, double hiF) -> std::string {
         if (hiF > 1e6) return "";
         double hz = fps / std::max(0.1, hiF);
-        if (loF <= 0.001) return fmt::format("(>={:.0f}Hz FP)", hz);
+        if (loF <= 0.001) return fmt::format("(>{:.0f}Hz FP)", hz);
         return fmt::format("(<{:.0f}Hz FP)", hz);
     };
 
     std::vector<TierDef> tiers;
     if (style == TableStyle::TopDown24) {
-        // Fixed native frame buckets for ANY Ref FPS (e.g. 240, 360, 1000 FPS -> "1:" is ALWAYS 1 frame at that FPS!)
-        struct RawTD { const char* key; double lo; double hi; double dispLo; double dispHi; const char* lbl; ccColor3B col; float pitch; };
+        struct RawTD { const char* key; double lo; double hi; const char* lbl; ccColor3B col; float pitch; };
         const RawTD raw[9] = {
-            { "1",     0.0,  2.0,  0.0,  1.0,  "1:",     ccc3(255, 110, 102),  0.32f },
-            { "2",     2.0,  3.0,  2.0,  2.0,  "2:",     ccc3(255, 184,  88),  0.22f },
-            { "3",     3.0,  4.0,  3.0,  3.0,  "3:",     ccc3(255, 240, 106),  0.14f },
-            { "4",     4.0,  5.0,  4.0,  4.0,  "4:",     ccc3(244, 248, 255),  0.07f },
-            { "5-6",   5.0,  7.0,  5.0,  6.0,  "5-6:",   ccc3(114, 244, 134),  0.01f },
-            { "7-8",   7.0,  9.0,  7.0,  8.0,  "7-8:",   ccc3(110, 224, 255), -0.05f },
-            { "9-12",  9.0, 13.0,  9.0, 12.0,  "9-12:",  ccc3(118, 168, 255), -0.10f },
-            { "13-16",13.0, 17.0, 13.0, 16.0,  "13-16:", ccc3(196, 164, 255), -0.15f },
-            { "17-24",17.0, 1e9,  17.0, 24.0,  "17-24:", ccc3(244, 162, 232), -0.20f }
+            { "1",     0.0,  2.0,  "1:",     ccc3(255, 110, 102),  0.32f },
+            { "2",     2.0,  3.0,  "2:",     ccc3(255, 184,  88),  0.22f },
+            { "3",     3.0,  4.0,  "3:",     ccc3(255, 240, 106),  0.14f },
+            { "4",     4.0,  5.0,  "4:",     ccc3(244, 248, 255),  0.07f },
+            { "5-6",   5.0,  7.0,  "5-6:",   ccc3(114, 244, 134),  0.01f },
+            { "7-8",   7.0,  9.0,  "7-8:",   ccc3(110, 224, 255), -0.05f },
+            { "9-12",  9.0, 13.0,  "9-12:",  ccc3(118, 168, 255), -0.10f },
+            { "13-16",13.0, 17.0,  "13-16:", ccc3(196, 164, 255), -0.15f },
+            { "17-24",17.0, 1e9,   "17-24:", ccc3(244, 162, 232), -0.20f }
         };
         for (auto const& b : raw) {
-            std::string desc = fmt::format("{} FRAMES {}", b.key, hzDescStr(b.dispLo, b.dispHi));
-            tiers.push_back({ b.key, b.lbl, desc, msRangeStr(b.dispLo, b.dispHi), b.lo, b.hi, b.col, b.pitch });
+            std::string lbl(b.lbl);
+            std::string desc = fmt::format("{} FRAMES {}", b.key, hzDescStr(b.lo, b.hi));
+            tiers.push_back({ b.key, lbl, desc, msRangeStr(b.lo, b.hi), b.lo, b.hi, b.col, b.pitch });
         }
     } else if (style == TableStyle::CbfRanges) {
         struct RawBucket { const char* key; double lo; double hi; const char* lbl; ccColor3B col; float pitch; };
@@ -243,25 +242,27 @@ inline std::vector<TierDef> buildTiers(TableStyle style, double refFps) {
             { "0-1",   0.0,  1.0, "0-1:",  ccc3(255,  86, 138),  0.32f }
         };
         for (auto const& b : raw) {
+            std::string lbl(b.lbl);
             std::string desc = (b.hi > 1e6)
                 ? fmt::format("{} FRAMES", b.key)
                 : fmt::format("{} FRAMES {}", b.key, hzDescStr(b.lo, b.hi));
-            tiers.push_back({ b.key, b.lbl, desc, msRangeStr(b.lo, b.hi), b.lo, b.hi, b.col, b.pitch });
+            tiers.push_back({ b.key, lbl, desc, msRangeStr(b.lo, b.hi), b.lo, b.hi, b.col, b.pitch });
         }
     } else {
-        struct RawDisc { const char* key; double lo; double hi; double dispLo; double dispHi; const char* lbl; ccColor3B col; float pitch; };
+        struct RawDisc { const char* key; double lo; double hi; const char* lbl; ccColor3B col; float pitch; };
         const RawDisc raw[7] = {
-            { "9-12", 9.0, 1e9,  9.0, 12.0, "9-12:", ccc3(122, 160, 255), -0.10f },
-            { "7-8",  7.0, 9.0,  7.0,  8.0, "7-8:",  ccc3( 96, 220, 255), -0.04f },
-            { "5-6",  5.0, 7.0,  5.0,  6.0, "5-6:",  ccc3(106, 240, 150),  0.02f },
-            { "4",    4.0, 5.0,  4.0,  4.0, "4:",    ccc3(222, 246, 112),  0.08f },
-            { "3",    3.0, 4.0,  3.0,  3.0, "3:",    ccc3(255, 224,  88),  0.14f },
-            { "2",    2.0, 3.0,  2.0,  2.0, "2:",    ccc3(255, 156,  84),  0.22f },
-            { "1",    0.0, 2.0,  0.0,  1.0, "1:",    ccc3(255,  92, 112),  0.32f }
+            { "9-12", 9.0, 1e9,  "9-12:", ccc3(122, 160, 255), -0.10f },
+            { "7-8",  7.0, 9.0,  "7-8:",  ccc3( 96, 220, 255), -0.04f },
+            { "5-6",  5.0, 7.0,  "5-6:",  ccc3(106, 240, 150),  0.02f },
+            { "4",    4.0, 5.0,  "4:",    ccc3(222, 246, 112),  0.08f },
+            { "3",    3.0, 4.0,  "3:",    ccc3(255, 224,  88),  0.14f },
+            { "2",    2.0, 3.0,  "2:",    ccc3(255, 156,  84),  0.22f },
+            { "1",    0.0, 2.0,  "1:",    ccc3(255,  92, 112),  0.32f }
         };
         for (auto const& b : raw) {
-            std::string desc = fmt::format("{} FRAMES {}", b.key, hzDescStr(b.dispLo, b.dispHi));
-            tiers.push_back({ b.key, b.lbl, desc, msRangeStr(b.dispLo, b.dispHi), b.lo, b.hi, b.col, b.pitch });
+            std::string lbl(b.lbl);
+            std::string desc = fmt::format("{} FRAMES {}", b.key, hzDescStr(b.lo, b.hi));
+            tiers.push_back({ b.key, lbl, desc, msRangeStr(b.lo, b.hi), b.lo, b.hi, b.col, b.pitch });
         }
     }
     return tiers;
