@@ -4,6 +4,7 @@
 #include <Geode/Geode.hpp>
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
@@ -35,6 +36,7 @@ private:
     std::string m_lastError;
     std::atomic<bool> m_downloadingFfmpeg{ false };
 
+#ifdef GEODE_IS_WINDOWS
     static std::string sanitizeFileName(std::string const& raw) {
         std::string out;
         for (char c : raw) {
@@ -56,6 +58,7 @@ private:
         }
         return out;
     }
+#endif
 
 public:
     static InternalRenderer& get() {
@@ -78,19 +81,23 @@ public:
     }
 
     std::string findFfmpegExecutable() const {
+#ifdef GEODE_IS_WINDOWS
         std::error_code ec;
         auto localBin = getRendersDir() / "ffmpeg.exe";
         if (std::filesystem::exists(localBin, ec)) return localBin.string();
         auto cfgBin = Mod::get()->getConfigDir() / "ffmpeg.exe";
         if (std::filesystem::exists(cfgBin, ec)) return cfgBin.string();
         return "ffmpeg";
+#else
+        return "";
+#endif
     }
 
     bool isFfmpegReady() const {
+#ifdef GEODE_IS_WINDOWS
         std::error_code ec;
         if (std::filesystem::exists(getRendersDir() / "ffmpeg.exe", ec)) return true;
         if (std::filesystem::exists(Mod::get()->getConfigDir() / "ffmpeg.exe", ec)) return true;
-#ifdef GEODE_IS_WINDOWS
         char buf[MAX_PATH];
         if (SearchPathA(nullptr, "ffmpeg.exe", nullptr, MAX_PATH, buf, nullptr) > 0) {
             return true;
@@ -100,6 +107,7 @@ public:
     }
 
     void startDownloadFfmpeg(std::function<void(bool, std::string)> onDone) {
+#ifdef GEODE_IS_WINDOWS
         if (m_downloadingFfmpeg.exchange(true)) return;
 
         auto targetDir = getRendersDir();
@@ -108,7 +116,6 @@ public:
         std::thread([this, targetDir, targetExe, onDone = std::move(onDone)]() {
             bool ok = false;
             std::string msg;
-#ifdef GEODE_IS_WINDOWS
             auto tempZip = targetDir / "_ffmpeg_tmp.zip";
             auto tempExt = targetDir / "_ffmpeg_ext";
             std::string zipPs = escapePsSingleQuote(tempZip.string());
@@ -156,15 +163,17 @@ public:
                 ok = false;
                 msg = "Auto-download failed (check internet/VPN). You can also drop ffmpeg.exe manually into the Renders Folder.";
             }
-#else
-            ok = false;
-            msg = "Automatic FFmpeg download is supported on Windows only.";
-#endif
+
             m_downloadingFfmpeg.store(false);
             Loader::get()->queueInMainThread([onDone, ok, msg]() {
                 if (onDone) onDone(ok, msg);
             });
         }).detach();
+#else
+        if (onDone) {
+            onDone(false, "Built-in FFmpeg render is Windows-only. On Android, use your phone's built-in Screen Recorder!");
+        }
+#endif
     }
 
     bool start(std::string const& levelName, ModConfig const& cfg) {
@@ -228,15 +237,16 @@ public:
         m_active = true;
         return true;
 #else
-        m_lastError = "Built-in FFmpeg render is currently supported on Windows only.";
+        (void)levelName;
+        (void)cfg;
+        m_lastError = "Built-in FFmpeg render is Windows-only. On Android, use your phone's built-in Screen Recorder!";
         return false;
 #endif
     }
 
     bool captureFrame(CCNode* targetLayer) {
-        if (!m_active || !m_pipe || !m_rt || !targetLayer) return false;
-
 #ifdef GEODE_IS_WINDOWS
+        if (!m_active || !m_pipe || !m_rt || !targetLayer) return false;
         m_rt->beginWithClear(0.0f, 0.0f, 0.0f, 1.0f);
         targetLayer->visit();
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -253,6 +263,7 @@ public:
         m_framesWritten++;
         return true;
 #else
+        (void)targetLayer;
         return false;
 #endif
     }

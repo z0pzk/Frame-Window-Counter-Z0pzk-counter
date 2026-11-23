@@ -3,6 +3,7 @@
 #include "Config.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -103,7 +104,7 @@ private:
 
         auto* bg = CCScale9Sprite::create("square02_001.png");
         bg->setOpacity(190);
-        bg->setContentSize({ 308.0f, 34.0f });
+        bg->setContentSize({ 316.0f, 34.0f });
         m_statusBanner->addChild(bg, 0);
 
         m_statusTitleLbl = CCLabelBMFont::create("WORKING...", "bigFont.fnt");
@@ -112,7 +113,12 @@ private:
         m_statusTitleLbl->setPosition({ 0.0f, 5.5f });
         m_statusBanner->addChild(m_statusTitleLbl, 2);
 
-        m_statusHintLbl = CCLabelBMFont::create("Press ESC to stop", "chatFont.fnt");
+#ifdef GEODE_IS_MOBILE
+        const char* defaultHint = "Press Back / Pause to stop";
+#else
+        const char* defaultHint = "Press ESC to stop";
+#endif
+        m_statusHintLbl = CCLabelBMFont::create(defaultHint, "chatFont.fnt");
         m_statusHintLbl->setScale(0.54f);
         m_statusHintLbl->setColor(ccc3(215, 222, 235));
         m_statusHintLbl->setPosition({ 0.0f, -8.5f });
@@ -157,7 +163,14 @@ private:
         m_rowFontScale = 0.39f * effScale;
         m_glowBaseScale = 0.46f * effScale;
 
+        // Slight safe-area inset on mobile so rounded corners / camera notch never clip text
+#ifdef GEODE_IS_MOBILE
+        float leftX = 18.0f;
+        float rightMargin = 18.0f;
+#else
         float leftX = 12.0f;
+        float rightMargin = 14.0f;
+#endif
         m_countX = leftX + ((m_cfg.tableStyle == TableStyle::TopDown24) ? 68.0f : 56.0f) * effScale;
         float topY = winSize.height - (13.0f + 4.0f * effScale);
         float curY = topY;
@@ -254,7 +267,7 @@ private:
         m_lblCallout->setScale(0.42f);
         m_lblCallout->setColor(ccc3(255, 255, 255));
         m_lblCallout->setOpacity(0);
-        m_lblCallout->setPosition({ winSize.width - 14.0f, winSize.height - 56.0f });
+        m_lblCallout->setPosition({ winSize.width - rightMargin, winSize.height - 56.0f });
         m_tableRoot->addChild(m_lblCallout, 4);
     }
 
@@ -279,7 +292,7 @@ private:
         m_introBg = CCLayerColor::create(ccc4(0, 0, 0, 238), winSize.width, winSize.height);
         m_introRoot->addChild(m_introBg, 0);
 
-        float lx = 26.0f;
+        float lx = 28.0f;
         auto addIntroLbl = [&](std::string const& txt, float x, float y, float scale, ccColor3B col, bool rightAlign) {
             auto* l = CCLabelBMFont::create(txt.c_str(), "bigFont.fnt");
             l->setAnchorPoint({ rightAlign ? 1.0f : 0.0f, 0.5f });
@@ -312,7 +325,7 @@ private:
             pLbl->limitLabelWidth(winSize.width * 0.46f, 0.34f, 0.18f);
         }
 
-        float rx = winSize.width - 22.0f;
+        float rx = winSize.width - 24.0f;
         std::string header = m_cfg.cbfMode
             ? fmt::format("{}HZ \"FRAMES\" W/ CBF", m_cfg.refFps)
             : fmt::format("{}HZ FRAME WINDOWS", m_cfg.refFps);
@@ -538,7 +551,6 @@ public:
         double clickWeight = clickPrecisionWeight(m_lastMs);
         m_rawPrecision += clickWeight;
 
-        // v10.3: Never clamp to 100.00% mid-level if an outdated smaller total was saved!
         if (m_knownTotalDifficulty > 0.05 && m_rawPrecision < m_knownTotalDifficulty * 0.995) {
             m_displayDiffPct = std::clamp((m_rawPrecision / m_knownTotalDifficulty) * 100.0, 0.0, 99.95);
         } else {

@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -24,6 +25,12 @@
 using namespace geode::prelude;
 
 namespace {
+
+#ifdef GEODE_IS_MOBILE
+constexpr const char* kScanCancelHint = "Exact GD Engine Probing  |  Press Back / Pause to cancel";
+#else
+constexpr const char* kScanCancelHint = "Exact GD Engine Probing  |  Press ESC to cancel";
+#endif
 
 struct TrackedObjRef {
     GameObject* ptr = nullptr;
@@ -120,6 +127,16 @@ int safeObjectID(Obj* obj) {
         return static_cast<int>(obj->m_objectID);
     } else {
         return 0;
+    }
+}
+
+template <typename PL>
+bool safeIsAnticheatSpike(PL* pl, GameObject* obj) {
+    if (!pl || !obj) return false;
+    if constexpr (requires { pl->m_anticheatSpike; }) {
+        return obj == pl->m_anticheatSpike;
+    } else {
+        return false;
     }
 }
 
@@ -247,7 +264,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
         size_t cpStartIdx = 0;
         bool hasActiveCp = false;
 
-        // Approach death recovery (so Scan Exact NEVER aborts after Click #1 on Acheron!)
         int lastApproachFiredIdx = -1;
         int approachRetryStep = 0;
 
@@ -336,7 +352,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 continue;
             }
 
-            // Index Gravity Portals, Jump Pads, and Gamemode/Teleport Portals by exact GD Object ID!
             fwc::sim::ObjKind kind = fwc::sim::ObjKind::Solid;
             bool keep = false;
             bool isCirc = false;
@@ -437,7 +452,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
             s.kind = ref.kind;
             s.isCircular = ref.isCircular;
             if (ref.kind == fwc::sim::ObjKind::Hazard && !s.isCircular) {
-                // Also treat large square hazards (sawblades / gears / spinning saws) as circular!
                 if (r.size.width >= 20.0f && r.size.height >= 20.0f &&
                     std::fabs(r.size.width - r.size.height) <= 8.0f) {
                     s.isCircular = true;
@@ -777,9 +791,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
     }
 
-    // =========================================================================
-    // RESILIENT FULL-LEVEL PATHFINDER SCANNER (Never aborts after Click #1!)
-    // =========================================================================
     void resetProbeState(std::function<void(bool, int, bool)> const& runBaseBtn) {
         auto& f = *m_fields.self();
         runBaseBtn(false, 1, true);
@@ -845,7 +856,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
         if (f.overlay) {
             f.overlay->clearCircles();
-            f.overlay->setStatusBanner(true, fmt::format("SCANNING 1 / {}...", f.scanClicks.size()), "Exact GD Engine Probing  |  Press ESC to cancel");
+            f.overlay->setStatusBanner(true, fmt::format("SCANNING 1 / {}...", f.scanClicks.size()), kScanCancelHint);
         }
 
         safeResetFromStart(this);
@@ -1007,7 +1018,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 }
 
                 if (didDie()) {
-                    // Self-healing approach: nudge the last fired click by +-1..4 ticks instead of aborting the whole scan!
                     if (f.lastApproachFiredIdx >= 0 && f.lastApproachFiredIdx < static_cast<int>(i) && f.approachRetryStep < 8) {
                         auto& prevC = f.scanClicks[static_cast<size_t>(f.lastApproachFiredIdx)];
                         prevC.x = std::max(0.0f, prevC.origX + kApproachNudgeX[f.approachRetryStep]);
@@ -1088,7 +1098,6 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 if (didDie() || doneTicks || safeHasCompleted(this)) {
                     float endX = m_player1 ? m_player1->getPositionX() : curX;
                     if (!didDie() || safeHasCompleted(this)) {
-                        // Lock onto verified surviving tick AND persist its exact X for future clicks!
                         f.baseClickTick = targetTick;
                         f.baseEndX = endX;
                         f.scanClicks[i].x = f.baseClickPos.x;
@@ -1120,7 +1129,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                         f.scanClickIdx++;
                         f.scanPhase = ScanPhase::ApproachCheckpoint;
                         if (f.overlay && f.scanClickIdx < f.scanClicks.size()) {
-                            f.overlay->setStatusBanner(true, fmt::format("SCANNING {} / {}...", f.scanClickIdx + 1, f.scanClicks.size()), "Exact GD Engine Probing  |  Press ESC to cancel");
+                            f.overlay->setStatusBanner(true, fmt::format("SCANNING {} / {}...", f.scanClickIdx + 1, f.scanClicks.size()), kScanCancelHint);
                         }
                         resetProbeState(runBaseBtn);
                     } else {
@@ -1191,7 +1200,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                     return;
                 }
                 if (f.overlay) {
-                    f.overlay->setStatusBanner(true, fmt::format("SCANNING {} / {}...", f.scanClickIdx + 1, f.scanClicks.size()), "Exact GD Engine Probing  |  Press ESC to cancel");
+                    f.overlay->setStatusBanner(true, fmt::format("SCANNING {} / {}...", f.scanClickIdx + 1, f.scanClicks.size()), kScanCancelHint);
                 }
                 f.scanPhase = ScanPhase::ApproachCheckpoint;
                 resetProbeState(runBaseBtn);
@@ -1218,10 +1227,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
     void destroyPlayer(PlayerObject* player, GameObject* object) {
         auto& f = *m_fields.self();
-        bool isAnticheat = false;
-        if constexpr (requires { this->m_anticheatSpike; }) {
-            isAnticheat = (object != nullptr && object == this->m_anticheatSpike);
-        }
+        bool isAnticheat = safeIsAnticheatSpike(this, object);
 
         if (f.isScanning) {
             if (!isAnticheat) f.scanProbeDied = true;

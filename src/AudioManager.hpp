@@ -25,6 +25,42 @@ private:
         return s;
     }
 
+    template <typename Eng>
+    bool tryPlayFmodDirect(Eng* engine, std::string const& path, float volume, float pitch) {
+        if constexpr (requires { engine->m_system; }) {
+            if (!engine || !engine->m_system) return false;
+            FMOD::Sound* sound = nullptr;
+            auto it = m_cache.find(path);
+            if (it != m_cache.end() && it->second != nullptr) {
+                sound = it->second;
+            } else {
+                FMOD_RESULT res = engine->m_system->createSound(
+                    path.c_str(),
+                    FMOD_DEFAULT,
+                    nullptr,
+                    &sound
+                );
+                if (res == FMOD_OK && sound != nullptr) {
+                    m_cache[path] = sound;
+                } else {
+                    sound = nullptr;
+                }
+            }
+
+            if (sound != nullptr) {
+                FMOD::Channel* channel = nullptr;
+                FMOD_RESULT playRes = engine->m_system->playSound(sound, nullptr, true, &channel);
+                if (playRes == FMOD_OK && channel != nullptr) {
+                    channel->setVolume(std::clamp(volume, 0.0f, 1.5f));
+                    channel->setPitch(std::clamp(pitch, 0.25f, 4.0f));
+                    channel->setPaused(false);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
 public:
     static AudioManager& get() {
         static AudioManager instance;
@@ -86,35 +122,8 @@ public:
         std::string path = resolvePath(preset, customFile);
         if (path.empty()) return;
 
-        if (engine->m_system) {
-            FMOD::Sound* sound = nullptr;
-            auto it = m_cache.find(path);
-            if (it != m_cache.end() && it->second != nullptr) {
-                sound = it->second;
-            } else {
-                FMOD_RESULT res = engine->m_system->createSound(
-                    path.c_str(),
-                    FMOD_DEFAULT,
-                    nullptr,
-                    &sound
-                );
-                if (res == FMOD_OK && sound != nullptr) {
-                    m_cache[path] = sound;
-                } else {
-                    sound = nullptr;
-                }
-            }
-
-            if (sound != nullptr) {
-                FMOD::Channel* channel = nullptr;
-                FMOD_RESULT playRes = engine->m_system->playSound(sound, nullptr, true, &channel);
-                if (playRes == FMOD_OK && channel != nullptr) {
-                    channel->setVolume(std::clamp(volume, 0.0f, 1.5f));
-                    channel->setPitch(std::clamp(pitch, 0.25f, 4.0f));
-                    channel->setPaused(false);
-                    return;
-                }
-            }
+        if (tryPlayFmodDirect(engine, path, volume, pitch)) {
+            return;
         }
 
         engine->playEffect(path);

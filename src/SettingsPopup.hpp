@@ -281,11 +281,18 @@ private:
             addStepperRow(m_contentNode, menu, "Circle Size", fmt::format("{:.1f}x", m_cfg.circleScale), 200, 201, leftX, topY - 156.0f, colW);
             addCheckboxRow(m_contentNode, menu, "Auto Comments", m_cfg.showAutoComments, 105, rightX, topY - 156.0f);
 
+#ifdef GEODE_IS_ANDROID
             auto* tip = CCLabelBMFont::create(
-                "v10.2: Rewritten Cube/Orb/Spider physics, exact speed, D-Block 1755, wave-safe Scan Exact.",
+                "v10.3 Android64: Full Auto + Scan Exact + Touch/Bot support + Portals/Sawblades physics.",
                 "chatFont.fnt"
             );
-            tip->setScale(0.49f);
+#else
+            auto* tip = CCLabelBMFont::create(
+                "v10.3: Gravity Portals/Pads, Circular Sawblades, Fixed Ball/BlueOrb flip, Full-Level Scan Exact.",
+                "chatFont.fnt"
+            );
+#endif
+            tip->setScale(0.48f);
             tip->setColor(ccc3(195, 202, 214));
             tip->setPosition({ kPanelW * 0.5f, 24.0f });
             m_contentNode->addChild(tip, 3);
@@ -634,6 +641,7 @@ private:
             menu->addChild(nextBtn);
         }
         else {
+#ifdef GEODE_IS_WINDOWS
             auto& ren = InternalRenderer::get();
             bool ffReady = ren.isFfmpegReady();
             bool ffBusy = ren.isDownloadingFfmpeg();
@@ -722,6 +730,25 @@ private:
             info->setColor(ccc3(202, 210, 224));
             info->setPosition({ kPanelW * 0.5f, 34.0f });
             m_contentNode->addChild(info, 3);
+#else
+            auto* mTitle = CCLabelBMFont::create("Android64 Mobile Edition", "goldFont.fnt");
+            mTitle->setScale(0.68f);
+            mTitle->setPosition({ kPanelW * 0.5f, topY - 16.0f });
+            m_contentNode->addChild(mTitle, 3);
+
+            auto* mBody = CCLabelBMFont::create(
+                "Built-in FFmpeg pipe rendering is available on Windows PC only.\n\n"
+                "On Android, simply use your phone's built-in Screen Recorder!\n"
+                "FWC HUD, Circles, Glow, Comments, Intro Freeze (Frame 0),\n"
+                "Auto Solver, and Scan Exact all work natively on Android64.",
+                "chatFont.fnt"
+            );
+            mBody->setAlignment(kCCTextAlignmentCenter);
+            mBody->setScale(0.62f);
+            mBody->setColor(ccc3(222, 228, 240));
+            mBody->setPosition({ kPanelW * 0.5f, topY - 96.0f });
+            m_contentNode->addChild(mBody, 3);
+#endif
         }
     }
 
@@ -743,7 +770,7 @@ private:
         if (m_recordedRunClicks == 0) {
             FLAlertLayer::create(
                 "No Clicks Recorded Yet",
-                "Play the level (or run your bot like Silicate) for one attempt first so FWC records your clicks, then press <cg>Scan Exact</c>!",
+                "Play the level (or run your bot) for one attempt first so FWC records your clicks, then press <cg>Scan Exact</c>!",
                 "OK"
             )->show();
             return;
@@ -921,7 +948,7 @@ private:
         if (files.empty()) {
             FLAlertLayer::create(
                 "No Custom Sounds",
-                "Drop any .wav, .mp3, or .ogg file into the sounds folder first (press Folder).",
+                fmt::format("Drop any .wav, .mp3, or .ogg file into:\n<cy>{}</c>", AudioManager::get().getCustomSoundsDir().string()).c_str(),
                 "OK"
             )->show();
             return;
@@ -939,7 +966,7 @@ private:
         if (files.empty()) {
             FLAlertLayer::create(
                 "No Custom Sounds",
-                "Drop any .wav, .mp3, or .ogg file into the sounds folder first (press Folder).",
+                fmt::format("Drop any .wav, .mp3, or .ogg file into:\n<cy>{}</c>", AudioManager::get().getCustomSoundsDir().string()).c_str(),
                 "OK"
             )->show();
             return;
@@ -957,7 +984,15 @@ private:
     }
 
     void onOpenSoundsFolderBtn(CCObject*) {
+#ifdef GEODE_IS_MOBILE
+        FLAlertLayer::create(
+            "Custom Sounds Folder",
+            fmt::format("Place .wav / .mp3 / .ogg files in:\n<cy>{}</c>", AudioManager::get().getCustomSoundsDir().string()).c_str(),
+            "OK"
+        )->show();
+#else
         geode::utils::file::openFolder(AudioManager::get().getCustomSoundsDir());
+#endif
     }
 
     void onTestBellBtn(CCObject*) {

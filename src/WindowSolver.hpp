@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -19,14 +20,14 @@ enum class ObjKind : uint8_t {
     GreenOrb = 8,
     BlackOrb = 9,
     DashOrb = 10,
-    GravPortalNormal = 11,  // ID 10 (Yellow)
-    GravPortalFlip   = 12,  // ID 11 (Blue)
-    GravPortalToggle = 13,  // ID 2926 (Green)
-    YellowPad        = 14,  // ID 35
-    PinkPad          = 15,  // ID 140
-    RedPad           = 16,  // ID 1332
-    BluePad          = 17,  // ID 67
-    ModePortal       = 18   // Gamemode / Teleport portals
+    GravPortalNormal = 11,
+    GravPortalFlip   = 12,
+    GravPortalToggle = 13,
+    YellowPad        = 14,
+    PinkPad          = 15,
+    RedPad           = 16,
+    BluePad          = 17,
+    ModePortal       = 18
 };
 
 struct SpatialObj {
@@ -37,7 +38,7 @@ struct SpatialObj {
     ObjKind kind = ObjKind::Solid;
     uint8_t slopeType = 0;
     bool hasDBlock = false;
-    bool isCircular = false; // True for circular sawblades/gears!
+    bool isCircular = false;
 };
 
 struct SimParams {
@@ -76,12 +77,10 @@ inline bool rectOverlaps(float ax0, float ax1, float ay0, float ay1, SpatialObj 
     return ax1 > o.minX && ax0 < o.maxX && ay1 > o.minY && ay0 < o.maxY;
 }
 
-// Accurate circle-vs-AABB test for circular sawblades & gears (prevents square-corner false 1F deaths!)
 inline bool aabbHitsCircleHazard(float px0, float px1, float py0, float py1, SpatialObj const& o) {
     if (!rectOverlaps(px0, px1, py0, py1, o)) return false;
     float ocx = 0.5f * (o.minX + o.maxX);
     float ocy = 0.5f * (o.minY + o.maxY);
-    // GD sawblade circular hitbox radius is ~0.40 of its bounding diameter
     float rad = 0.40f * std::min(o.maxX - o.minX, o.maxY - o.minY);
     float closestX = std::clamp(ocx, px0, px1);
     float closestY = std::clamp(ocy, py0, py1);
@@ -241,9 +240,6 @@ inline bool touchesOtherOrb(std::vector<SpatialObj> const& local, int excludeIdx
     return false;
 }
 
-// =========================================================================
-// WAVE SOLVER (Circular sawblades + Mode Portal exit awareness + D-block safe)
-// =========================================================================
 inline float waveRayClearanceSec(
     std::vector<SpatialObj> const& local,
     float xStart, float yStart,
@@ -258,7 +254,6 @@ inline float waveRayClearanceSec(
         float x = xStart + vx * t;
         float y = yStart + vy * t;
 
-        // If wave enters a gamemode portal or D-block cleanly, stop ray with full clearance!
         if (s >= 4) {
             float px0 = x - hw, px1 = x + hw, py0 = y - hh, py1 = y + hh;
             for (auto const& o : local) {
@@ -362,12 +357,8 @@ inline double solveWaveWindowSec(SimParams const& p, std::vector<SpatialObj> con
     return std::max(0.00025, winSec);
 }
 
-// =========================================================================
-// SHIP / SWING SOLVER
-// =========================================================================
 inline double solveShipWindowSec(SimParams const& p, std::vector<SpatialObj> const& local) {
     float gravSign = p.upsideDown ? -1.0f : 1.0f;
-    float hw = p.halfW * 0.90f;
     float hh = p.halfH * 0.90f;
 
     float upClear = 120.0f;
@@ -394,16 +385,11 @@ inline double solveShipWindowSec(SimParams const& p, std::vector<SpatialObj> con
     return std::clamp(tSec, 0.0010, 0.080);
 }
 
-// =========================================================================
-// v10.3 EXACT CUBE / BALL / SPIDER / UFO / ORB / PORTAL / PAD SOLVER
-// =========================================================================
 struct ProbeOutcome {
     float endX = 0.0f;
     bool died = false;
 };
 
-// Apply Gravity Portals, Jump Pads, and Mode Portals along the trajectory!
-// Returns true if player entered a Mode/Teleport Portal (segment cleanly handed off -> SUCCESS!).
 inline bool processPortalsAndPads(
     std::vector<SpatialObj> const& local,
     int& lastPortalIdx,
@@ -464,12 +450,11 @@ inline bool processPortalsAndPads(
             case ObjKind::BluePad:
                 gravSign = -gravSign;
                 g = -baseGravMag * gravSign;
-                // Blue pad pushes in direction of NEW gravity (-gravSign)!
                 vy = -210.0f * gravSign;
                 onG = false;
                 break;
             case ObjKind::ModePortal:
-                if (stepNum >= 5) return true; // Cleanly reached next gamemode!
+                if (stepNum >= 5) return true;
                 break;
             default:
                 break;
@@ -582,7 +567,6 @@ inline ProbeOutcome simulateCandidate(
             case ObjKind::YellowOrb: vy = (p.mini ? 483.0f : 603.7f) * gravSign; break;
             case ObjKind::PinkOrb:   vy = (p.mini ? 362.9f : 453.6f) * gravSign; break;
             case ObjKind::RedOrb:    vy = (p.mini ? 639.4f : 799.2f) * gravSign; break;
-            // FIXED SIGN BUG: BlueOrb & GreenOrb flip gravity AND move in direction of NEW gravity (-gravSign)!
             case ObjKind::BlueOrb:   gravSign = -gravSign; g = -kCubeGrav * gravSign; vy = -210.0f * gravSign; break;
             case ObjKind::GreenOrb:  gravSign = -gravSign; g = -kCubeGrav * gravSign; vy = -(p.mini ? 483.0f : 603.7f) * gravSign; break;
             case ObjKind::BlackOrb:  vy = -864.0f * gravSign; break;
@@ -593,8 +577,6 @@ inline ProbeOutcome simulateCandidate(
         vy = (p.mini ? 388.0f : 432.0f) * gravSign;
         g = (p.mini ? -2790.0f : -2385.0f) * gravSign;
     } else if (p.isBall) {
-        // FIXED SIGN BUG: Ball flips gravity AND moves in direction of NEW gravity (-gravSign)!
-        // e.g. Normal (+1) -> flips to Upside-Down (-1): g = +2385 (UP), vy = -(-1)*135 = +135 (UP)!
         gravSign = -gravSign;
         vy = -135.0f * gravSign;
         g = -2385.0f * gravSign;
@@ -614,7 +596,6 @@ inline ProbeOutcome simulateCandidate(
         g = -kCubeGrav * gravSign;
     }
 
-    // Check if the click occurred directly inside a Gravity Portal (e.g. Acheron 8.32%, 61.76%, 81.27%)!
     (void)processPortalsAndPads(local, lastPortal, x, y, p.halfW, p.halfH, p.mini, gravSign, vy, g, onG, 0);
 
     bool startedInSolid = hitsSolidCore(local, x, y, p.halfW, p.halfH);
@@ -873,8 +854,6 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
     double frames = scanWindowPass(p, local, orbIdx, checkGroundSupp, horizonSec, 1.0f, refFps, anySurv, allSurv);
     if (allSurv) return -1.0;
 
-    // Tight-jump fallback ONLY for pure ground Cube jumps (like Acheron's 1st click),
-    // NEVER for Orbs/Portals/Balls/UFO so unrecognized portal interactions NEVER become fake 1F!
     bool isPureCubeGround = p.onGround && !clickWasOrb && !p.isBall && !p.isSpider && !p.isUfo && !p.isShip && !p.isWave;
     if (frames < 0.0 && !anySurv && isPureCubeGround) {
         bool anySurvRelax = false, allSurvRelax = false;
