@@ -28,10 +28,12 @@ namespace {
 struct TrackedObjRef {
     GameObject* ptr = nullptr;
     fwc::sim::ObjKind kind = fwc::sim::ObjKind::Solid;
+    bool isCircular = false;
 };
 
 struct RecordedClick {
     float x = 0.0f;
+    float origX = 0.0f;
     float y = 30.0f;
     bool down = true;
     bool isP1 = true;
@@ -63,11 +65,11 @@ float resolveExactSpeedX(P* p, float fallbackVx) {
     if constexpr (requires { static_cast<float>(p->m_playerSpeed); }) {
         float sp = static_cast<float>(p->m_playerSpeed);
         if (sp > 0.1f && sp < 3.0f) {
-            if (sp < 0.78f) return 251.16f; // 0.5x
-            if (sp < 0.98f) return 311.58f; // 1x
-            if (sp < 1.20f) return 387.42f; // 2x
-            if (sp < 1.45f) return 468.00f; // 3x
-            return 576.00f;                 // 4x
+            if (sp < 0.78f) return 251.16f;
+            if (sp < 0.98f) return 311.58f;
+            if (sp < 1.20f) return 387.42f;
+            if (sp < 1.45f) return 468.00f;
+            return 576.00f;
         }
     }
     return std::clamp(fallbackVx, 180.0f, 950.0f);
@@ -245,6 +247,10 @@ class $modify(FWCPlayLayer, PlayLayer) {
         size_t cpStartIdx = 0;
         bool hasActiveCp = false;
 
+        // Approach death recovery (so Scan Exact NEVER aborts after Click #1 on Acheron!)
+        int lastApproachFiredIdx = -1;
+        int approachRetryStep = 0;
+
         int probeTick = 0;
         int baseClickTick = 0;
         int anchorDelta = 0;
@@ -324,44 +330,58 @@ class $modify(FWCPlayLayer, PlayLayer) {
         for (auto* obj : CCArrayExt<GameObject*>(m_objects)) {
             if (!obj) continue;
 
-            // True GD D-Block Object ID = 1755!
             int objId = safeObjectID(obj);
             if (objId == 1755) {
                 f.dBlockObjects.push_back(obj);
                 continue;
             }
 
-            auto t = obj->m_objectType;
+            // Index Gravity Portals, Jump Pads, and Gamemode/Teleport Portals by exact GD Object ID!
             fwc::sim::ObjKind kind = fwc::sim::ObjKind::Solid;
             bool keep = false;
+            bool isCirc = false;
 
-            if (t == GameObjectType::Hazard || t == GameObjectType::AnimatedHazard) {
-                kind = fwc::sim::ObjKind::Hazard;
+            if (objId == 10)        { kind = fwc::sim::ObjKind::GravPortalNormal; keep = true; }
+            else if (objId == 11)   { kind = fwc::sim::ObjKind::GravPortalFlip;   keep = true; }
+            else if (objId == 2926) { kind = fwc::sim::ObjKind::GravPortalToggle; keep = true; }
+            else if (objId == 35)   { kind = fwc::sim::ObjKind::YellowPad;        keep = true; }
+            else if (objId == 140)  { kind = fwc::sim::ObjKind::PinkPad;          keep = true; }
+            else if (objId == 1332) { kind = fwc::sim::ObjKind::RedPad;           keep = true; }
+            else if (objId == 67)   { kind = fwc::sim::ObjKind::BluePad;          keep = true; }
+            else if (objId == 12 || objId == 13 || objId == 47 || objId == 111 ||
+                     objId == 660 || objId == 745 || objId == 1331 || objId == 1933 ||
+                     objId == 747 || objId == 2902) {
+                kind = fwc::sim::ObjKind::ModePortal;
                 keep = true;
-            } else if (t == GameObjectType::Solid) {
-                kind = fwc::sim::ObjKind::Solid;
-                keep = true;
-            } else if (t == GameObjectType::Slope) {
-                kind = fwc::sim::ObjKind::Slope;
-                keep = true;
-            } else if (t == GameObjectType::YellowJumpRing) {
-                kind = fwc::sim::ObjKind::YellowOrb; keep = true;
-            } else if (t == GameObjectType::PinkJumpRing) {
-                kind = fwc::sim::ObjKind::PinkOrb; keep = true;
-            } else if (t == GameObjectType::RedJumpRing) {
-                kind = fwc::sim::ObjKind::RedOrb; keep = true;
-            } else if (t == GameObjectType::GravityRing) {
-                kind = fwc::sim::ObjKind::BlueOrb; keep = true;
-            } else if (t == GameObjectType::GreenRing) {
-                kind = fwc::sim::ObjKind::GreenOrb; keep = true;
-            } else if (t == GameObjectType::DropRing) {
-                kind = fwc::sim::ObjKind::BlackOrb; keep = true;
-            } else if (t == GameObjectType::DashRing || t == GameObjectType::GravityDashRing) {
-                kind = fwc::sim::ObjKind::DashOrb; keep = true;
+            } else {
+                auto t = obj->m_objectType;
+                if (t == GameObjectType::Hazard || t == GameObjectType::AnimatedHazard) {
+                    kind = fwc::sim::ObjKind::Hazard;
+                    isCirc = (t == GameObjectType::AnimatedHazard);
+                    keep = true;
+                } else if (t == GameObjectType::Solid) {
+                    kind = fwc::sim::ObjKind::Solid; keep = true;
+                } else if (t == GameObjectType::Slope) {
+                    kind = fwc::sim::ObjKind::Slope; keep = true;
+                } else if (t == GameObjectType::YellowJumpRing) {
+                    kind = fwc::sim::ObjKind::YellowOrb; keep = true;
+                } else if (t == GameObjectType::PinkJumpRing) {
+                    kind = fwc::sim::ObjKind::PinkOrb; keep = true;
+                } else if (t == GameObjectType::RedJumpRing) {
+                    kind = fwc::sim::ObjKind::RedOrb; keep = true;
+                } else if (t == GameObjectType::GravityRing) {
+                    kind = fwc::sim::ObjKind::BlueOrb; keep = true;
+                } else if (t == GameObjectType::GreenRing) {
+                    kind = fwc::sim::ObjKind::GreenOrb; keep = true;
+                } else if (t == GameObjectType::DropRing) {
+                    kind = fwc::sim::ObjKind::BlackOrb; keep = true;
+                } else if (t == GameObjectType::DashRing || t == GameObjectType::GravityDashRing) {
+                    kind = fwc::sim::ObjKind::DashOrb; keep = true;
+                }
             }
 
             if (!keep) continue;
-            f.liveObjects.push_back({ obj, kind });
+            f.liveObjects.push_back({ obj, kind, isCirc });
 
             if (kind == fwc::sim::ObjKind::Hazard || fwc::sim::isOrbKind(kind)) {
                 f.hazardXSorted.push_back(obj->getPositionX());
@@ -401,7 +421,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
             if (!obj || isObjectDisabledOrPassable(obj)) continue;
 
             float ox = obj->getPositionX();
-            if (ox < xMin - 60.0f || ox > xMax + 60.0f) continue;
+            if (ox < xMin - 65.0f || ox > xMax + 65.0f) continue;
             float oy = obj->getPositionY();
             if (std::fabs(oy - yCenter) > 380.0f) continue;
 
@@ -415,6 +435,14 @@ class $modify(FWCPlayLayer, PlayLayer) {
             s.minY = r.getMinY();
             s.maxY = r.getMaxY();
             s.kind = ref.kind;
+            s.isCircular = ref.isCircular;
+            if (ref.kind == fwc::sim::ObjKind::Hazard && !s.isCircular) {
+                // Also treat large square hazards (sawblades / gears / spinning saws) as circular!
+                if (r.size.width >= 20.0f && r.size.height >= 20.0f &&
+                    std::fabs(r.size.width - r.size.height) <= 8.0f) {
+                    s.isCircular = true;
+                }
+            }
             if (ref.kind == fwc::sim::ObjKind::Slope) {
                 s.slopeType = computeSlopeType(obj);
             }
@@ -501,7 +529,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
         bool relMatters = player->m_isDart || player->m_isShip || player->m_isRobot || player->m_isSwing;
         if (f.currentRun.size() < 3000) {
-            f.currentRun.push_back({ pos.x, pos.y, down, isPlayer1, relMatters, player->m_isDart });
+            f.currentRun.push_back({ pos.x, pos.x, pos.y, down, isPlayer1, relMatters, player->m_isDart });
             if (f.currentRun.size() >= f.savedRun.size()) {
                 f.savedRun = f.currentRun;
             }
@@ -749,6 +777,9 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
     }
 
+    // =========================================================================
+    // RESILIENT FULL-LEVEL PATHFINDER SCANNER (Never aborts after Click #1!)
+    // =========================================================================
     void resetProbeState(std::function<void(bool, int, bool)> const& runBaseBtn) {
         auto& f = *m_fields.self();
         runBaseBtn(false, 1, true);
@@ -757,6 +788,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         f.scanProbeDied = false;
         f.probeTick = 0;
         f.targetFiredThisProbe = false;
+        f.lastApproachFiredIdx = -1;
         std::fill(f.replayFired.begin(), f.replayFired.end(), false);
         for (size_t j = 0; j < f.cpStartIdx && j < f.replayFired.size(); ++j) {
             f.replayFired[j] = true;
@@ -780,6 +812,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         if (source.empty()) return;
 
         f.scanClicks = source;
+        for (auto& sc : f.scanClicks) sc.origX = sc.x;
         std::sort(f.scanClicks.begin(), f.scanClicks.end(), [](RecordedClick const& a, RecordedClick const& b) {
             return a.x < b.x;
         });
@@ -790,6 +823,8 @@ class $modify(FWCPlayLayer, PlayLayer) {
         f.scanClickIdx = 0;
         f.cpStartIdx = 0;
         f.hasActiveCp = false;
+        f.lastApproachFiredIdx = -1;
+        f.approachRetryStep = 0;
         f.totalSolved = 0;
         f.diagSkip = 0;
         f.diagFail = 0;
@@ -873,6 +908,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         constexpr float kFixedDt = 1.0f / 240.0f;
         constexpr int kMaxShift = 24;
         static constexpr int kAnchorOffsets[10] = { 1, -1, 2, -2, 3, -3, 4, -4, 5, -5 };
+        static constexpr float kApproachNudgeX[8] = { 1.3f, -1.3f, 2.6f, -2.6f, 4.0f, -4.0f, 5.5f, -5.5f };
 
         auto tStart = std::chrono::steady_clock::now();
         int stepsDone = 0;
@@ -918,6 +954,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                     if (skipTarget && j == i) continue;
                     if (!f.replayFired[j] && curX >= f.scanClicks[j].x) {
                         f.replayFired[j] = true;
+                        f.lastApproachFiredIdx = static_cast<int>(j);
                         runBaseBtn(f.scanClicks[j].down, 1, f.scanClicks[j].isP1);
                     }
                 }
@@ -928,6 +965,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                     f.hasActiveCp = false;
                     f.cpStartIdx = 0;
                     f.maxApproachTicks = 600;
+                    f.approachRetryStep = 0;
                     f.scanPhase = ScanPhase::MeasureBaseline;
                     f.baseClickTick = -1;
                     f.anchorDelta = 0;
@@ -951,6 +989,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                         f.cpStartIdx = 0;
                         f.maxApproachTicks = std::max(600, static_cast<int>((f.scanClicks[i].x / 140.0f) * 240.0f) + 240);
                     }
+                    f.approachRetryStep = 0;
                     f.scanPhase = ScanPhase::MeasureBaseline;
                     f.baseClickTick = -1;
                     f.anchorDelta = 0;
@@ -962,7 +1001,20 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 fireReplayRange(f.cpStartIdx, i, false);
                 runBaseUpdate(kFixedDt);
 
-                if (didDie() || safeHasCompleted(this) || f.probeTick > 36000) {
+                if (safeHasCompleted(this) || f.probeTick > 36000) {
+                    finishOrCancelScan(true);
+                    return;
+                }
+
+                if (didDie()) {
+                    // Self-healing approach: nudge the last fired click by +-1..4 ticks instead of aborting the whole scan!
+                    if (f.lastApproachFiredIdx >= 0 && f.lastApproachFiredIdx < static_cast<int>(i) && f.approachRetryStep < 8) {
+                        auto& prevC = f.scanClicks[static_cast<size_t>(f.lastApproachFiredIdx)];
+                        prevC.x = std::max(0.0f, prevC.origX + kApproachNudgeX[f.approachRetryStep]);
+                        f.approachRetryStep++;
+                        resetProbeState(runBaseBtn);
+                        continue;
+                    }
                     finishOrCancelScan(true);
                     return;
                 }
@@ -1024,6 +1076,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
                 if (!f.targetFiredThisProbe && f.probeTick == targetTick) {
                     f.targetFiredThisProbe = true;
+                    f.baseClickPos = m_player1 ? m_player1->getPosition() : ccp(f.scanClicks[i].x, f.scanClicks[i].y);
                     f.replayFired[i] = true;
                     runBaseBtn(f.scanClicks[i].down, 1, f.scanClicks[i].isP1);
                 }
@@ -1035,8 +1088,11 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 if (didDie() || doneTicks || safeHasCompleted(this)) {
                     float endX = m_player1 ? m_player1->getPositionX() : curX;
                     if (!didDie() || safeHasCompleted(this)) {
+                        // Lock onto verified surviving tick AND persist its exact X for future clicks!
                         f.baseClickTick = targetTick;
                         f.baseEndX = endX;
+                        f.scanClicks[i].x = f.baseClickPos.x;
+                        f.scanClicks[i].origX = f.baseClickPos.x;
                         f.scanPhase = ScanPhase::TestSkip;
                         resetProbeState(runBaseBtn);
                     } else {
