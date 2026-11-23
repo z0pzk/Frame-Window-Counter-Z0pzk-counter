@@ -538,12 +538,12 @@ public:
         double clickWeight = clickPrecisionWeight(m_lastMs);
         m_rawPrecision += clickWeight;
 
-        if (m_knownTotalDifficulty > 0.05) {
-            m_displayDiffPct = std::clamp((m_rawPrecision / m_knownTotalDifficulty) * 100.0, 0.0, 100.0);
+        // v10.3: Never clamp to 100.00% mid-level if an outdated smaller total was saved!
+        if (m_knownTotalDifficulty > 0.05 && m_rawPrecision < m_knownTotalDifficulty * 0.995) {
+            m_displayDiffPct = std::clamp((m_rawPrecision / m_knownTotalDifficulty) * 100.0, 0.0, 99.95);
         } else {
-            double hFrac = std::clamp(hazardFractionPassed, 0.02, 1.0);
-            double estRemaining = (1.0 - hFrac) * std::max(m_rawPrecision / hFrac, 35.0);
-            double estTotal = m_rawPrecision + estRemaining;
+            double hFrac = std::clamp(hazardFractionPassed, 0.02, 0.98);
+            double estTotal = m_rawPrecision / hFrac;
             double estPct = (estTotal > 1e-4) ? ((m_rawPrecision / estTotal) * 100.0) : 0.0;
             m_displayDiffPct = std::clamp(std::max(m_displayDiffPct, estPct), 0.0, 99.95);
         }
