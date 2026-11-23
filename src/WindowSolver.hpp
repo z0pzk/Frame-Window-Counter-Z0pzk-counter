@@ -18,7 +18,15 @@ enum class ObjKind : uint8_t {
     BlueOrb = 7,
     GreenOrb = 8,
     BlackOrb = 9,
-    DashOrb = 10
+    DashOrb = 10,
+    GravPortalNormal = 11,  // ID 10 (Yellow)
+    GravPortalFlip   = 12,  // ID 11 (Blue)
+    GravPortalToggle = 13,  // ID 2926 (Green)
+    YellowPad        = 14,  // ID 35
+    PinkPad          = 15,  // ID 140
+    RedPad           = 16,  // ID 1332
+    BluePad          = 17,  // ID 67
+    ModePortal       = 18   // Gamemode / Teleport portals
 };
 
 struct SpatialObj {
@@ -29,6 +37,7 @@ struct SpatialObj {
     ObjKind kind = ObjKind::Solid;
     uint8_t slopeType = 0;
     bool hasDBlock = false;
+    bool isCircular = false; // True for circular sawblades/gears!
 };
 
 struct SimParams {
@@ -49,17 +58,36 @@ struct SimParams {
     bool isPress = true;
 };
 
-// Exact GD 2.2 Explicit-Euler jump constants (includes 0.9 Y displacement scale: 60 * 0.9 = 54)
 constexpr float kCubeVyNormal = 603.722f;
 constexpr float kCubeVyMini   = 482.977f;
 constexpr float kCubeGrav     = 3104.565f;
 
 inline bool isOrbKind(ObjKind k) {
-    return static_cast<uint8_t>(k) >= static_cast<uint8_t>(ObjKind::YellowOrb);
+    uint8_t v = static_cast<uint8_t>(k);
+    return v >= static_cast<uint8_t>(ObjKind::YellowOrb) &&
+           v <= static_cast<uint8_t>(ObjKind::DashOrb);
+}
+
+inline bool isPortalOrPadKind(ObjKind k) {
+    return static_cast<uint8_t>(k) >= static_cast<uint8_t>(ObjKind::GravPortalNormal);
 }
 
 inline bool rectOverlaps(float ax0, float ax1, float ay0, float ay1, SpatialObj const& o) {
     return ax1 > o.minX && ax0 < o.maxX && ay1 > o.minY && ay0 < o.maxY;
+}
+
+// Accurate circle-vs-AABB test for circular sawblades & gears (prevents square-corner false 1F deaths!)
+inline bool aabbHitsCircleHazard(float px0, float px1, float py0, float py1, SpatialObj const& o) {
+    if (!rectOverlaps(px0, px1, py0, py1, o)) return false;
+    float ocx = 0.5f * (o.minX + o.maxX);
+    float ocy = 0.5f * (o.minY + o.maxY);
+    // GD sawblade circular hitbox radius is ~0.40 of its bounding diameter
+    float rad = 0.40f * std::min(o.maxX - o.minX, o.maxY - o.minY);
+    float closestX = std::clamp(ocx, px0, px1);
+    float closestY = std::clamp(ocy, py0, py1);
+    float dx = ocx - closestX;
+    float dy = ocy - closestY;
+    return (dx * dx + dy * dy) < (rad * rad);
 }
 
 inline bool boxHitsSlopeTriangle(float cx, float cy, float hw, float hh, SpatialObj const& o) {
@@ -88,7 +116,11 @@ inline bool hitsHazard(std::vector<SpatialObj> const& local, float cx, float cy,
     float px0 = cx - hw, px1 = cx + hw, py0 = cy - hh, py1 = cy + hh;
     for (auto const& o : local) {
         if (o.kind == ObjKind::Hazard) {
-            if (rectOverlaps(px0, px1, py0, py1, o)) return true;
+            if (o.isCircular) {
+                if (aabbHitsCircleHazard(px0, px1, py0, py1, o)) return true;
+            } else {
+                if (rectOverlaps(px0, px1, py0, py1, o)) return true;
+            }
         } else if (waveMode && !o.hasDBlock && o.kind == ObjKind::Solid) {
             if (rectOverlaps(px0, px1, py0, py1, o)) return true;
         } else if (waveMode && !o.hasDBlock && o.kind == ObjKind::Slope) {
@@ -99,7 +131,6 @@ inline bool hitsHazard(std::vector<SpatialObj> const& local, float cx, float cy,
 }
 
 inline bool hitsSolidCore(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh) {
-    // GD blue inner hitbox is 30% of player size (9x9 for normal cube)
     float px0 = cx - hw * 0.28f, px1 = cx + hw * 0.28f;
     float py0 = cy - hh * 0.28f, py1 = cy + hh * 0.28f;
     for (auto const& o : local) {
@@ -140,14 +171,12 @@ inline bool hasGroundSupport(std::vector<SpatialObj> const& local, float cx, flo
     return findSupportY(local, cx, cy, hw, hh, upsideDown, dummy);
 }
 
-// Find nearest solid/slope surface strictly above (normal gravity) or below (upside down) for Spider teleport!
 inline bool findSpiderDestY(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh, bool upsideDown, float& outCenterY) {
     float px0 = cx - hw * 0.92f, px1 = cx + hw * 0.92f;
     bool found = false;
     float bestY = cy;
 
     if (upsideDown) {
-        // Teleporting DOWN: ground y=0 is always a valid floor!
         bestY = hh;
         found = true;
         for (auto const& o : local) {
@@ -162,7 +191,6 @@ inline bool findSpiderDestY(std::vector<SpatialObj> const& local, float cx, floa
             }
         }
     } else {
-        // Teleporting UP: find lowest ceiling block above player
         for (auto const& o : local) {
             if (o.kind != ObjKind::Solid && o.kind != ObjKind::Slope) continue;
             if (o.maxX <= px0 || o.minX >= px1) continue;
@@ -179,7 +207,6 @@ inline bool findSpiderDestY(std::vector<SpatialObj> const& local, float cx, floa
     return found;
 }
 
-// Find the closest orb overlapping (or slightly ahead of for buffered orb clicks!) the player. Returns index in local or -1.
 inline int findActiveOrbIndex(std::vector<SpatialObj> const& local, float cx, float cy, float hw, float hh, float margin) {
     float px0 = cx - hw - margin, px1 = cx + hw + margin;
     float py0 = cy - hh - margin, py1 = cy + hh + margin;
@@ -215,7 +242,7 @@ inline bool touchesOtherOrb(std::vector<SpatialObj> const& local, int excludeIdx
 }
 
 // =========================================================================
-// WAVE SOLVER (Kept intact as user loved it + D-Block / onGround slide guard!)
+// WAVE SOLVER (Circular sawblades + Mode Portal exit awareness + D-block safe)
 // =========================================================================
 inline float waveRayClearanceSec(
     std::vector<SpatialObj> const& local,
@@ -230,6 +257,17 @@ inline float waveRayClearanceSec(
         float t = static_cast<float>(s) * stepT;
         float x = xStart + vx * t;
         float y = yStart + vy * t;
+
+        // If wave enters a gamemode portal or D-block cleanly, stop ray with full clearance!
+        if (s >= 4) {
+            float px0 = x - hw, px1 = x + hw, py0 = y - hh, py1 = y + hh;
+            for (auto const& o : local) {
+                if ((o.kind == ObjKind::ModePortal || o.kind == ObjKind::DBlock) && rectOverlaps(px0, px1, py0, py1, o)) {
+                    return maxTimeSec;
+                }
+            }
+        }
+
         if (y < hh || hitsHazard(local, x, y, hw, hh, true)) {
             float lo = static_cast<float>(s - 1) * stepT;
             float hi = t;
@@ -247,7 +285,6 @@ inline float waveRayClearanceSec(
 }
 
 inline double solveWaveWindowSec(SimParams const& p, std::vector<SpatialObj> const& local) {
-    // D-block / floor auto-wave slide guard (fixes Slaughterhouse ending!)
     if (p.onGround || insideAnyDBlock(local, p.x0, p.y0, 14.0f)) {
         return -1.0;
     }
@@ -273,7 +310,7 @@ inline double solveWaveWindowSec(SimParams const& p, std::vector<SpatialObj> con
         return -1.0;
     }
 
-    float reqPost = std::min(tPost0 * 0.55f, 0.024f);
+    float reqPost = std::min(tPost0 * 0.52f, 0.022f);
     if (reqPost < 0.001f) reqPost = 0.001f;
 
     auto isWaveShiftValid = [&](float dT) -> bool {
@@ -326,7 +363,7 @@ inline double solveWaveWindowSec(SimParams const& p, std::vector<SpatialObj> con
 }
 
 // =========================================================================
-// SHIP / SWING SOLVER (Kept intact as user loved it!)
+// SHIP / SWING SOLVER
 // =========================================================================
 inline double solveShipWindowSec(SimParams const& p, std::vector<SpatialObj> const& local) {
     float gravSign = p.upsideDown ? -1.0f : 1.0f;
@@ -358,19 +395,88 @@ inline double solveShipWindowSec(SimParams const& p, std::vector<SpatialObj> con
 }
 
 // =========================================================================
-// v10.2 REWRITTEN CUBE / BALL / SPIDER / UFO / ORB SOLVER
-// Key fixes:
-//  1) Stops with SUCCESS when reaching the next orb or landing cleanly (2 ticks)!
-//     -> Fixes Blue Orb spam & Cube spam turning into fake 1F!
-//  2) Spider uses exact ray-to-surface teleport (ignores mid-air spikes!).
-//  3) Buffer clicks project forward to exact landing/orb contact before scanning!
-//  4) Wide [-95ms, +95ms] scan range catches full 21F windows even on last-frame clicks!
-//  5) Tight 1F fallback recovers Acheron 1st click if 1.0x hitbox barely clips by 0.5px!
+// v10.3 EXACT CUBE / BALL / SPIDER / UFO / ORB / PORTAL / PAD SOLVER
 // =========================================================================
 struct ProbeOutcome {
     float endX = 0.0f;
     bool died = false;
 };
+
+// Apply Gravity Portals, Jump Pads, and Mode Portals along the trajectory!
+// Returns true if player entered a Mode/Teleport Portal (segment cleanly handed off -> SUCCESS!).
+inline bool processPortalsAndPads(
+    std::vector<SpatialObj> const& local,
+    int& lastPortalIdx,
+    float x, float y, float hw, float hh,
+    bool mini,
+    float& gravSign,
+    float& vy,
+    float& g,
+    bool& onG,
+    int stepNum
+) {
+    float px0 = x - hw, px1 = x + hw, py0 = y - hh, py1 = y + hh;
+    float baseGravMag = std::fabs(g);
+    if (baseGravMag < 100.0f) baseGravMag = kCubeGrav;
+
+    for (size_t i = 0; i < local.size(); ++i) {
+        if (static_cast<int>(i) == lastPortalIdx) continue;
+        auto const& o = local[i];
+        if (!isPortalOrPadKind(o.kind)) continue;
+        if (!rectOverlaps(px0, px1, py0, py1, o)) continue;
+
+        lastPortalIdx = static_cast<int>(i);
+        switch (o.kind) {
+            case ObjKind::GravPortalNormal:
+                if (gravSign < 0.0f) {
+                    gravSign = 1.0f;
+                    g = -baseGravMag;
+                    vy = std::clamp(vy, -240.0f, 240.0f);
+                    onG = false;
+                }
+                break;
+            case ObjKind::GravPortalFlip:
+                if (gravSign > 0.0f) {
+                    gravSign = -1.0f;
+                    g = baseGravMag;
+                    vy = std::clamp(vy, -240.0f, 240.0f);
+                    onG = false;
+                }
+                break;
+            case ObjKind::GravPortalToggle:
+                gravSign = -gravSign;
+                g = -baseGravMag * gravSign;
+                vy = std::clamp(vy, -240.0f, 240.0f);
+                onG = false;
+                break;
+            case ObjKind::YellowPad:
+                vy = (mini ? 640.0f : 795.0f) * gravSign;
+                onG = false;
+                break;
+            case ObjKind::PinkPad:
+                vy = (mini ? 430.0f : 535.0f) * gravSign;
+                onG = false;
+                break;
+            case ObjKind::RedPad:
+                vy = (mini ? 820.0f : 990.0f) * gravSign;
+                onG = false;
+                break;
+            case ObjKind::BluePad:
+                gravSign = -gravSign;
+                g = -baseGravMag * gravSign;
+                // Blue pad pushes in direction of NEW gravity (-gravSign)!
+                vy = -210.0f * gravSign;
+                onG = false;
+                break;
+            case ObjKind::ModePortal:
+                if (stepNum >= 5) return true; // Cleanly reached next gamemode!
+                break;
+            default:
+                break;
+        }
+    }
+    return false;
+}
 
 inline ProbeOutcome simulateCandidate(
     SimParams const& p,
@@ -397,20 +503,25 @@ inline ProbeOutcome simulateCandidate(
         float g = -kCubeGrav * gravSign;
         bool onG = p.onGround && !p.isUfo;
         bool startedInSolid = hitsSolidCore(local, x, y, p.halfW, p.halfH);
+        int lastPortal = -1;
 
         int steps = std::max(1, static_cast<int>(std::ceil(horizonSec / dt)));
         for (int s = 1; s <= steps; ++s) {
             x += p.vx * dt;
+            if (processPortalsAndPads(local, lastPortal, x, y, p.halfW, p.halfH, p.mini, gravSign, vy, g, onG, s)) {
+                return { targetEndX, false };
+            }
+            bool curUp = (gravSign < 0.0f);
             if (onG) {
                 float supY = y;
-                if (checkGroundSupp && !findSupportY(local, x, y, p.halfW, p.halfH, p.upsideDown, supY)) {
+                if (checkGroundSupp && !findSupportY(local, x, y, p.halfW, p.halfH, curUp, supY)) {
                     onG = false;
                 }
             }
             if (!onG) {
                 y += vy * dt;
                 vy += g * dt;
-                if (y < p.halfH && !p.upsideDown) {
+                if (y < p.halfH && !curUp) {
                     y = p.halfH; vy = 0.0f;
                     onG = !p.isUfo;
                 }
@@ -447,14 +558,12 @@ inline ProbeOutcome simulateCandidate(
     } else {
         float preG = -kCubeGrav * gravSign;
         yClick = p.y0 + p.vy0 * deltaT + 0.5f * preG * deltaT * deltaT;
-        // If shifting backward/forward in air, check we didn't hit a hazard BEFORE clicking
         if (hitsHazard(local, xClick, yClick, hazHW, hazHH, false)) {
             return { xClick, true };
         }
     }
 
     if (clickWasOrb) {
-        // Real GD orb touch box is generous (+6u around orb rect -> ~42u total orb zone)
         auto const& orbObj = local[static_cast<size_t>(orbIdx)];
         float ox0 = orbObj.minX - 6.0f, ox1 = orbObj.maxX + 6.0f;
         float oy0 = orbObj.minY - 6.0f, oy1 = orbObj.maxY + 6.0f;
@@ -466,14 +575,16 @@ inline ProbeOutcome simulateCandidate(
     float x = xClick, y = yClick, vy = 0.0f;
     float g = -kCubeGrav * gravSign;
     bool onG = false;
+    int lastPortal = -1;
 
     if (clickWasOrb) {
         switch (orbKind) {
             case ObjKind::YellowOrb: vy = (p.mini ? 483.0f : 603.7f) * gravSign; break;
             case ObjKind::PinkOrb:   vy = (p.mini ? 362.9f : 453.6f) * gravSign; break;
             case ObjKind::RedOrb:    vy = (p.mini ? 639.4f : 799.2f) * gravSign; break;
-            case ObjKind::BlueOrb:   gravSign = -gravSign; g = -g; vy = 205.0f * gravSign; break;
-            case ObjKind::GreenOrb:  gravSign = -gravSign; g = -g; vy = 603.7f * gravSign; break;
+            // FIXED SIGN BUG: BlueOrb & GreenOrb flip gravity AND move in direction of NEW gravity (-gravSign)!
+            case ObjKind::BlueOrb:   gravSign = -gravSign; g = -kCubeGrav * gravSign; vy = -210.0f * gravSign; break;
+            case ObjKind::GreenOrb:  gravSign = -gravSign; g = -kCubeGrav * gravSign; vy = -(p.mini ? 483.0f : 603.7f) * gravSign; break;
             case ObjKind::BlackOrb:  vy = -864.0f * gravSign; break;
             case ObjKind::DashOrb:   vy = 0.0f; g = 0.0f; break;
             default:                 vy = 603.7f * gravSign; break;
@@ -482,11 +593,12 @@ inline ProbeOutcome simulateCandidate(
         vy = (p.mini ? 388.0f : 432.0f) * gravSign;
         g = (p.mini ? -2790.0f : -2385.0f) * gravSign;
     } else if (p.isBall) {
+        // FIXED SIGN BUG: Ball flips gravity AND moves in direction of NEW gravity (-gravSign)!
+        // e.g. Normal (+1) -> flips to Upside-Down (-1): g = +2385 (UP), vy = -(-1)*135 = +135 (UP)!
         gravSign = -gravSign;
-        vy = 145.0f * gravSign;
+        vy = -135.0f * gravSign;
         g = -2385.0f * gravSign;
     } else if (p.isSpider) {
-        // Exact GD Spider teleport: teleports straight to destination surface, ignoring mid-air hazards!
         float destY = y;
         if (!findSpiderDestY(local, x, y, p.halfW, p.halfH, p.upsideDown, destY)) {
             return { x, true };
@@ -502,7 +614,9 @@ inline ProbeOutcome simulateCandidate(
         g = -kCubeGrav * gravSign;
     }
 
-    bool curUpsideDown = (gravSign < 0.0f);
+    // Check if the click occurred directly inside a Gravity Portal (e.g. Acheron 8.32%, 61.76%, 81.27%)!
+    (void)processPortalsAndPads(local, lastPortal, x, y, p.halfW, p.halfH, p.mini, gravSign, vy, g, onG, 0);
+
     bool startedInSolid = hitsSolidCore(local, x, y, p.halfW, p.halfH);
     int maxSteps = std::max(1, static_cast<int>(std::ceil((targetEndX - x) / (p.vx * dt)))) + 2;
     int landedTicks = 0;
@@ -510,11 +624,16 @@ inline ProbeOutcome simulateCandidate(
     for (int s = 1; s <= maxSteps && x < targetEndX; ++s) {
         x += p.vx * dt;
 
+        if (processPortalsAndPads(local, lastPortal, x, y, p.halfW, p.halfH, p.mini, gravSign, vy, g, onG, s)) {
+            return { targetEndX, false };
+        }
+
+        bool curUpsideDown = (gravSign < 0.0f);
+
         if (!onG) {
             y += vy * dt;
             vy += g * dt;
 
-            // Check if trajectory cleanly reached the NEXT orb (e.g. Blue Orb spam in Acheron!) -> Click #1 SUCCEEDED!
             if (s >= 6 && touchesOtherOrb(local, orbIdx, x, y, p.halfW, p.halfH)) {
                 return { targetEndX, false };
             }
@@ -525,7 +644,7 @@ inline ProbeOutcome simulateCandidate(
                 if (!p.isUfo && s > 8) {
                     onG = true;
                 }
-            } else if (!p.isUfo && s > 10 && (vy * gravSign < 0.0f)) {
+            } else if (!p.isUfo && s > 8 && (vy * gravSign < 0.0f)) {
                 float supY = y;
                 if (findSupportY(local, x, y, p.halfW, p.halfH, curUpsideDown, supY)) {
                     y = supY;
@@ -535,7 +654,6 @@ inline ProbeOutcome simulateCandidate(
             }
         } else {
             landedTicks++;
-            // 2 ticks on ground (checked against hazards!) = clean landing! Don't run into the next jump's spike!
             if (landedTicks >= 2) {
                 return { targetEndX, false };
             }
@@ -561,24 +679,18 @@ inline double scanWindowPass(
     outAnySurvived = false;
     outAllSurvived = false;
 
-    // Wide [-96ms, +96ms] scan at 1/240s step (47 probes) + fine 1/960s sub-scan around 0 for 1F precision!
     constexpr int kCoarseHalf = 23;
     constexpr int kCoarseN = 2 * kCoarseHalf + 1;
     constexpr float kCoarseStep = 1.0f / 240.0f;
 
     ProbeOutcome out[kCoarseN];
-    float bestX = p.x0;
-    float minX = 1e18f;
 
     for (int i = 0; i < kCoarseN; ++i) {
         float dT = static_cast<float>(i - kCoarseHalf) * kCoarseStep;
         out[i] = simulateCandidate(p, local, dT, orbIdx, checkGroundSupp, true, horizonSec, hitboxScale);
         if (!out[i].died) outAnySurvived = true;
-        if (out[i].endX > bestX) bestX = out[i].endX;
-        if (out[i].endX < minX) minX = out[i].endX;
     }
 
-    // If coarse grid missed a sub-frame 1F jump right near deltaT=0, probe fine 1/960s grid around [-12ms, +12ms]!
     float fineAnchorT = 0.0f;
     bool foundFineSurvive = false;
     if (!outAnySurvived) {
@@ -594,14 +706,12 @@ inline double scanWindowPass(
                     fineAnchorT = dT;
                     break;
                 }
-                if (po.endX > bestX) bestX = po.endX;
             }
             if (foundFineSurvive) break;
         }
     }
 
     if (foundFineSurvive) {
-        // Expand directly around fineAnchorT using 1/960s steps + binary search!
         constexpr float kFineStep = 1.0f / 960.0f;
         float rightT = fineAnchorT;
         for (int k = 1; k <= 32; ++k) {
@@ -714,11 +824,8 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
 
     if (local.empty()) return -1.0;
 
-    // 1) Detect orb (including buffered orb clicks slightly before entering the orb!)
     int orbIdx = findActiveOrbIndex(local, p.x0, p.y0, p.halfW, p.halfH, 8.0f);
 
-    // 2) Buffer-click projection: if player pressed Jump in mid-air right before landing or entering an orb,
-    //    project forward up to 0.14s along their real falling arc to find the exact ground/orb contact!
     if (orbIdx < 0 && !p.isUfo && !p.onGround) {
         constexpr float dt = 1.0f / 240.0f;
         float gravSign = p.upsideDown ? -1.0f : 1.0f;
@@ -743,20 +850,18 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
                 break;
             }
         }
-        if (!projected) return -1.0; // Mid-air meaningless click (not buffering a landing or orb)!
+        if (!projected) return -1.0;
     }
 
     bool clickWasOrb = (orbIdx >= 0);
     bool checkGroundSupp = p.onGround && !clickWasOrb &&
         hasGroundSupport(local, p.x0, p.y0, p.halfW, p.halfH, p.upsideDown);
 
-    // Shorter, focused horizon for orbs/UFO/Ball/Spider so we evaluate THIS click, not 3 clicks later!
     float horizonSec = 0.44f;
     if (clickWasOrb) horizonSec = 0.28f;
     else if (p.isUfo) horizonSec = 0.22f;
     else if (p.isBall || p.isSpider) horizonSec = 0.24f;
 
-    // 3) Danger test: if NOT clicking survives cleanly, skip harmless click!
     if (!clickWasOrb) {
         auto noClick = simulateCandidate(p, local, 0.0f, -1, checkGroundSupp, false, horizonSec, 1.0f);
         if (!noClick.died) {
@@ -764,18 +869,17 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
         }
     }
 
-    // 4) Primary exact 1.00x hitbox scan
     bool anySurv = false, allSurv = false;
     double frames = scanWindowPass(p, local, orbIdx, checkGroundSupp, horizonSec, 1.0f, refFps, anySurv, allSurv);
-    if (allSurv) return -1.0; // Wide open (> 46F @ 240Hz)
+    if (allSurv) return -1.0;
 
-    // 5) Tight-jump fallback: if NOT clicking died (mandatory jump!) and 1.00x hitbox barely clipped by 0.5-1px
-    //    (e.g. Acheron 1st click), re-scan with 0.88x hitbox so we NEVER skip a real 1F jump!
-    if (frames < 0.0 && !anySurv) {
+    // Tight-jump fallback ONLY for pure ground Cube jumps (like Acheron's 1st click),
+    // NEVER for Orbs/Portals/Balls/UFO so unrecognized portal interactions NEVER become fake 1F!
+    bool isPureCubeGround = p.onGround && !clickWasOrb && !p.isBall && !p.isSpider && !p.isUfo && !p.isShip && !p.isWave;
+    if (frames < 0.0 && !anySurv && isPureCubeGround) {
         bool anySurvRelax = false, allSurvRelax = false;
-        double fRelax = scanWindowPass(p, local, orbIdx, checkGroundSupp, horizonSec, 0.90f, refFps, anySurvRelax, allSurvRelax);
+        double fRelax = scanWindowPass(p, local, -1, checkGroundSupp, horizonSec, 0.90f, refFps, anySurvRelax, allSurvRelax);
         if (anySurvRelax && fRelax > 0.0) {
-            // Barely clipped at 1.00x hitbox and survived cleanly at 0.90x -> genuine tight ~1F window!
             frames = std::clamp(fRelax * 0.35, 0.45 * (refFps / 240.0), 1.65 * (refFps / 240.0));
         }
     }
