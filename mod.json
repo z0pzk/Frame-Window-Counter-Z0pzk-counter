@@ -8,7 +8,7 @@
     },
     "id": "z0pzk.frame-window-counter",
     "name": "Frame Window Counter",
-    "version": "v10.3.1",
+    "version": "v10.3.2",
     "developer": "z0pzk",
     "description": "Frame & CBF Window Counter v10.3 — fixes Ball/BlueOrb/GreenOrb gravity flip impulse sign, adds Gravity Portals / Jump Pads / Gamemode Portals & circular Sawblade hitboxes to Auto physics, prevents early 100.00% clamping, and fixes Scan Exact stopping after 1 click.",
     "resources": {
