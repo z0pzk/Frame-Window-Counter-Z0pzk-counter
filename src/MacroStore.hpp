@@ -210,48 +210,83 @@ inline bool parseGDR2(std::vector<uint8_t> const& buf, LoadedMacro& out) {
 //    Format by Peony (silicate-bot/slc)
 // =========================================================================
 inline bool parseSilicateV3(std::vector<uint8_t> const& buf, LoadedMacro& out) {
-    // SLC v3 starts with "SLC3" or version byte 3
-    if (buf.size() < 16) return false;
-    size_t pos = 0;
-    if (buf[0] == 'S' && buf[1] == 'L' && buf[2] == 'C' && buf[3] == '3') {
-        pos = 4;
-    } else if (buf[0] == 'S' && buf[1] == 'L' && buf[2] == 'C' && buf[3] == 3) {
-        pos = 4;
-    } else {
-        return false;
-    }
+    // Official Silicate v3 format:
+    //   [0..7]   "SLC3RPLY" (8 bytes)
+    //   [8..9]   uint16_t metaSize
+    //   [10..]   meta block (starts with double tps)
+    //   Atoms:   uint32_t atomId, uint64_t atomLen, payload[atomLen] ... terminated by 0xCC
+    //   Atom 1 (ActionAtom): uint64_t actionCount, then RLE chunks:
+    //     uint8_t mode (0x00), uint8_t tag: width = ((tag >> 4) & 0xF) + 1, count = 1 << (tag & 0xF)
+    //     Each little-endian value: delta = val >> 4, btn = (val >> 2) & 3, isP1 = (val >> 1) & 1, down = val & 1
+    if (buf.size() < 24) return false;
+    if (std::memcmp(buf.data(), "SLC3RPLY", 8) != 0) return false;
+
+    size_t pos = 8;
+    uint16_t metaSize = 0;
+    if (!readLE(buf, pos, metaSize)) return false;
+    if (pos + static_cast<size_t>(metaSize) > buf.size()) return false;
 
     double tps = 240.0;
-    if (!readLE(buf, pos, tps)) return false;
-    if (!std::isfinite(tps) || tps < 10.0 || tps > 100000.0) tps = 240.0;
+    if (metaSize >= 8) {
+        size_t tpsPos = pos;
+        double rawTps = 240.0;
+        if (readLE(buf, tpsPos, rawTps) && std::isfinite(rawTps) && rawTps >= 20.0 && rawTps <= 100000.0) {
+            tps = rawTps;
+        }
+    }
+    pos += static_cast<size_t>(metaSize);
 
-    // Scan remaining atoms for action streams
     out.sourceFps = tps;
     out.sourceBot = "Silicate";
     out.inputs.clear();
 
-    // Try reading atom count + atoms (type/id + size + payload)
-    uint64_t metaLen = 0;
-    if (readLE(buf, pos, metaLen) && pos + static_cast<size_t>(metaLen) <= buf.size()) {
-        pos += static_cast<size_t>(metaLen);
-    }
+    while (pos < buf.size()) {
+        if (buf[pos] == 0xCCu) break;
+        if (pos + 12 > buf.size()) break;
+        uint32_t atomId = 0;
+        uint64_t atomLen = 0;
+        if (!readLE(buf, pos, atomId) || !readLE(buf, pos, atomLen)) break;
+        if (atomLen > buf.size() - pos) break;
+        size_t atomEnd = pos + static_cast<size_t>(atomLen);
 
-    // Read packed 64-bit input records if remaining size is multiple of 8 after count
-    uint64_t count = 0;
-    if (readLE(buf, pos, count) && count > 0 && count < 2000000 && pos + static_cast<size_t>(count) * 8 <= buf.size()) {
-        out.inputs.reserve(static_cast<size_t>(count));
-        for (uint64_t i = 0; i < count; ++i) {
-            uint64_t packed = 0;
-            if (!readLE(buf, pos, packed)) break;
-            uint64_t frame = packed >> 4;
-            int btn = static_cast<int>((packed >> 2) & 3u);
-            bool isP2 = ((packed >> 1) & 1u) != 0;
-            bool down = (packed & 1u) != 0;
-            if (btn == 1) {
-                out.inputs.push_back({ scaleFrameTo240(frame, tps), down, 1, !isP2 });
+        if (atomId == 1 && atomLen >= 8) {
+            size_t aPos = pos;
+            uint64_t actionCount = 0;
+            if (readLE(buf, aPos, actionCount) && actionCount > 0 && actionCount < 2000000) {
+                out.inputs.reserve(static_cast<size_t>(actionCount));
+                uint64_t curFrame = 0;
+                uint64_t decoded = 0;
+                while (aPos + 2 <= atomEnd && decoded < actionCount) {
+                    uint8_t mode = buf[aPos++];
+                    uint8_t tag = buf[aPos++];
+                    if (mode != 0x00u) break;
+                    size_t width = static_cast<size_t>((tag >> 4) & 0xFu) + 1;
+                    size_t runCount = static_cast<size_t>(1u) << (tag & 0xFu);
+                    if (width > 8) break;
+                    for (size_t r = 0; r < runCount && decoded < actionCount; ++r) {
+                        if (aPos + width > atomEnd) break;
+                        uint64_t val = 0;
+                        for (size_t b = 0; b < width; ++b) {
+                            val |= static_cast<uint64_t>(buf[aPos++]) << (b * 8);
+                        }
+                        decoded++;
+                        uint64_t delta = val >> 4;
+                        curFrame += delta;
+                        uint8_t low4 = static_cast<uint8_t>(val & 0xFu);
+                        int btn = static_cast<int>((low4 >> 2) & 3u);
+                        bool isP1 = ((low4 >> 1) & 1u) != 0;
+                        bool down = (low4 & 1u) != 0;
+                        if (btn == 1) {
+                            if (curFrame == 0 && !down) continue;
+                            out.inputs.push_back({ scaleFrameTo240(curFrame, tps), down, 1, isP1 });
+                        }
+                    }
+                }
             }
         }
+        pos = atomEnd;
     }
+
     std::stable_sort(out.inputs.begin(), out.inputs.end(), [](MacroInput const& a, MacroInput const& b) {
         return a.tick240 < b.tick240;
     });
