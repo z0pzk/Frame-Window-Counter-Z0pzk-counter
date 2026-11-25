@@ -288,7 +288,10 @@ inline float waveRayClearanceSec(
 }
 
 inline double solveWaveWindowSec(SimParams const& p, std::vector<SpatialObj> const& local) {
-    if (p.onGround || insideAnyDBlock(local, p.x0, p.y0, 14.0f)) {
+    if (p.onGround && insideAnyDBlock(local, p.x0, p.y0, 4.0f)) {
+        return -1.0;
+    }
+    if (insideAnyDBlock(local, p.x0, p.y0, 2.5f)) {
         return -1.0;
     }
 
@@ -385,7 +388,7 @@ inline double solveShipWindowSec(SimParams const& p, std::vector<SpatialObj> con
     }
 
     float totalVertGap = upClear + downClear;
-    if (totalVertGap > 75.0f) return -1.0;
+    if (totalVertGap > 95.0f) return -1.0;
 
     float activeGap = (gravSign > 0.0f) ? std::min(downClear + upClear * 0.45f, totalVertGap) : std::min(upClear + downClear * 0.45f, totalVertGap);
     double tSec = std::sqrt((2.0 * std::max(0.8, static_cast<double>(activeGap))) / 1050.0) * 0.42;

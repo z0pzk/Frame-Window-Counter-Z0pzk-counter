@@ -43,8 +43,8 @@ private:
     CCNode* m_contentNode = nullptr;
     CCMenu* m_tabMenu = nullptr;
 
-    static constexpr float kPanelW = 452.0f;
-    static constexpr float kPanelH = 298.0f;
+    static constexpr float kPanelW = 476.0f;
+    static constexpr float kPanelH = 304.0f;
 
     void notifyLive() {
         m_cfg.save();
@@ -144,7 +144,7 @@ private:
         m_panel->addChild(m_tabMenu, 10);
 
         const char* names[6] = { "Counter", "Macro", "HUD", "Audio", "Manual", "Render" };
-        float tabW = 64.0f;
+        float tabW = 70.0f;
         float gap = 5.0f;
         float totalW = 6 * tabW + 5 * gap;
         float startX = (kPanelW - totalW) * 0.5f + tabW * 0.5f;
@@ -152,14 +152,11 @@ private:
 
         for (int i = 0; i < 6; ++i) {
             bool active = (m_activeTab == i);
-            auto* spr = ButtonSprite::create(
+            auto* spr = makeMiniBtn(
                 names[i],
-                static_cast<int>(tabW),
-                true,
-                active ? "goldFont.fnt" : "bigFont.fnt",
-                active ? "GJ_button_01.png" : "GJ_button_04.png",
-                24.0f,
-                active ? 0.56f : 0.40f
+                tabW,
+                23.0f,
+                active ? "GJ_button_01.png" : "GJ_button_04.png"
             );
             auto* btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(SettingsPopup::onTabSelect));
             btn->setTag(i);

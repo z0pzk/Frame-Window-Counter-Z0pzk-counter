@@ -52,6 +52,15 @@ struct PendingClick {
     int ticksLeft = 2;
 };
 
+struct PreStepPlayerSnap {
+    bool valid = false;
+    float x = 0.0f;
+    float y = 30.0f;
+    float vy = 0.0f;
+    bool onGround = true;
+    bool upsideDown = false;
+};
+
 struct ScanCheckpoint {
     float worldX = 0.0f;
     uint64_t simTick = 0;
@@ -256,6 +265,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         float measuredSpeedX = 311.58f;
 
         bool prevHolding[2] = { false, false };
+        PreStepPlayerSnap preSnap[2];
         uint64_t lastHookTick[2][2] = { { 0, 0 }, { 0, 0 } };
         bool isDeadThisAttempt = false;
         bool completedSavedThisAttempt = false;
@@ -340,6 +350,22 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
     void bumpUpdateTick() {
         m_fields->updateTick++;
+    }
+
+    void capturePreStepSnapshot() {
+        auto& f = *m_fields.self();
+        auto snapOne = [&](PlayerObject* p, int idx) {
+            if (!p || p->m_isDead) { f.preSnap[idx].valid = false; return; }
+            CCPoint pos = p->getPosition();
+            f.preSnap[idx].valid = true;
+            f.preSnap[idx].x = pos.x;
+            f.preSnap[idx].y = pos.y;
+            f.preSnap[idx].vy = static_cast<float>(p->m_yVelocity) * 54.0f;
+            f.preSnap[idx].onGround = p->m_isOnGround;
+            f.preSnap[idx].upsideDown = p->m_isUpsideDown;
+        };
+        snapOne(m_player1, 0);
+        snapOne(m_player2, 1);
     }
 
     size_t getRecordedClickCount() {
@@ -527,7 +553,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
     }
 
-    double computeAutoWindowFrames(PlayerObject* player, bool isPress) {
+    double computeAutoWindowFrames(PlayerObject* player, bool isPress, bool usePreSnap, int pIdx) {
         auto& f = *m_fields.self();
         ensureObjectsIndexed();
         if (!player) return -1.0;
@@ -535,20 +561,21 @@ class $modify(FWCPlayLayer, PlayLayer) {
         fwc::sim::SimParams p;
         CCPoint pos = player->getPosition();
         CCRect rect = player->getObjectRect();
-        p.x0 = pos.x;
-        p.y0 = pos.y;
+        bool snapOk = usePreSnap && (pIdx == 0 || pIdx == 1) && f.preSnap[pIdx].valid;
+        p.x0 = snapOk ? f.preSnap[pIdx].x : pos.x;
+        p.y0 = snapOk ? f.preSnap[pIdx].y : pos.y;
         p.halfW = std::clamp(rect.size.width * 0.5f, 5.0f, 18.0f);
         p.halfH = std::clamp(rect.size.height * 0.5f, 5.0f, 18.0f);
         p.vx = resolveExactSpeedX(player, f.measuredSpeedX);
-        p.vy0 = static_cast<float>(player->m_yVelocity) * 54.0f;
-        p.upsideDown = player->m_isUpsideDown;
+        p.vy0 = snapOk ? f.preSnap[pIdx].vy : (static_cast<float>(player->m_yVelocity) * 54.0f);
+        p.upsideDown = snapOk ? f.preSnap[pIdx].upsideDown : player->m_isUpsideDown;
         p.mini = (player->m_vehicleSize < 0.8f);
         p.isWave = player->m_isDart;
         p.isShip = player->m_isShip || player->m_isSwing;
         p.isBall = player->m_isBall;
         p.isUfo = player->m_isBird;
         p.isSpider = player->m_isSpider;
-        p.onGround = player->m_isOnGround;
+        p.onGround = snapOk ? f.preSnap[pIdx].onGround : player->m_isOnGround;
         p.isPress = isPress;
 
         std::vector<fwc::sim::SpatialObj> local;
@@ -624,7 +651,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         recordInputForScan(player, down, isPlayer1);
 
         if (f.cfg.mode == fwc::CounterMode::Auto || f.cfg.captureToManual) {
-            double estFrames = computeAutoWindowFrames(player, down);
+            double estFrames = computeAutoWindowFrames(player, down, !fromHook, pIdx);
             if (estFrames < 0.0) return;
 
             auto pos = player->getPosition();
@@ -1804,6 +1831,7 @@ class $modify(FWCGJBaseGameLayer, GJBaseGameLayer) {
                 return;
             }
 
+            fwcPl->capturePreStepSnapshot();
             GJBaseGameLayer::update(dt);
             fwcPl->runFramePostStep(dt);
             fwcPl->bumpUpdateTick();

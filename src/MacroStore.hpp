@@ -665,6 +665,14 @@ public:
 
                 std::string fname = p.filename().string();
                 std::string fnameLow = macro_detail::toLowerAscii(fname);
+                if (ext == ".json") {
+                    if (fnameLow == "settings.json" || fnameLow == "keybinds.json" ||
+                        fnameLow == "labels.json" || fnameLow == "config.json" ||
+                        fnameLow == "mod.json" || fnameLow == "themes.json" ||
+                        fnameLow == "saved.json") {
+                        continue;
+                    }
+                }
                 bool matches = !lvlLow.empty() && lvlLow.size() >= 3 && (fnameLow.find(lvlLow) != std::string::npos);
 
                 int64_t mtime = 0;
