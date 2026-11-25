@@ -20,14 +20,19 @@ enum class ObjKind : uint8_t {
     GreenOrb = 8,
     BlackOrb = 9,
     DashOrb = 10,
-    GravPortalNormal = 11,
-    GravPortalFlip   = 12,
-    GravPortalToggle = 13,
-    YellowPad        = 14,
-    PinkPad          = 15,
-    RedPad           = 16,
-    BluePad          = 17,
-    ModePortal       = 18
+    SpiderOrb = 11,
+    TriggerOrb = 12,
+    GravPortalNormal = 13,
+    GravPortalFlip   = 14,
+    GravPortalToggle = 15,
+    YellowPad        = 16,
+    PinkPad          = 17,
+    RedPad           = 18,
+    BluePad          = 19,
+    ModePortal       = 20,
+    TeleportPortal   = 21,
+    SizePortalNormal = 22,
+    SizePortalMini   = 23
 };
 
 struct SpatialObj {
@@ -61,12 +66,12 @@ struct SimParams {
 
 constexpr float kCubeVyNormal = 603.722f;
 constexpr float kCubeVyMini   = 482.977f;
-constexpr float kCubeGrav     = 3104.565f;
+constexpr float kCubeGrav     = 2794.108f;
 
 inline bool isOrbKind(ObjKind k) {
     uint8_t v = static_cast<uint8_t>(k);
     return v >= static_cast<uint8_t>(ObjKind::YellowOrb) &&
-           v <= static_cast<uint8_t>(ObjKind::DashOrb);
+           v <= static_cast<uint8_t>(ObjKind::TriggerOrb);
 }
 
 inline bool isPortalOrPadKind(ObjKind k) {
@@ -228,8 +233,8 @@ inline int findActiveOrbIndex(std::vector<SpatialObj> const& local, float cx, fl
 }
 
 inline bool touchesOtherOrb(std::vector<SpatialObj> const& local, int excludeIdx, float cx, float cy, float hw, float hh) {
-    float px0 = cx - hw - 3.0f, px1 = cx + hw + 3.0f;
-    float py0 = cy - hh - 3.0f, py1 = cy + hh + 3.0f;
+    float px0 = cx - hw - 5.0f, px1 = cx + hw + 5.0f;
+    float py0 = cy - hh - 5.0f, py1 = cy + hh + 5.0f;
     for (size_t i = 0; i < local.size(); ++i) {
         if (static_cast<int>(i) == excludeIdx) continue;
         auto const& o = local[i];
@@ -254,10 +259,13 @@ inline float waveRayClearanceSec(
         float x = xStart + vx * t;
         float y = yStart + vy * t;
 
-        if (s >= 4) {
+        {
             float px0 = x - hw, px1 = x + hw, py0 = y - hh, py1 = y + hh;
             for (auto const& o : local) {
-                if ((o.kind == ObjKind::ModePortal || o.kind == ObjKind::DBlock) && rectOverlaps(px0, px1, py0, py1, o)) {
+                if (o.kind == ObjKind::TeleportPortal && rectOverlaps(px0, px1, py0, py1, o)) {
+                    return maxTimeSec;
+                }
+                if (s >= 4 && (o.kind == ObjKind::ModePortal || o.kind == ObjKind::DBlock) && rectOverlaps(px0, px1, py0, py1, o)) {
                     return maxTimeSec;
                 }
             }
@@ -394,7 +402,7 @@ inline bool processPortalsAndPads(
     std::vector<SpatialObj> const& local,
     int& lastPortalIdx,
     float x, float y, float hw, float hh,
-    bool mini,
+    bool& mini,
     float& gravSign,
     float& vy,
     float& g,
@@ -453,8 +461,16 @@ inline bool processPortalsAndPads(
                 vy = -210.0f * gravSign;
                 onG = false;
                 break;
+            case ObjKind::TeleportPortal:
+                return true;
             case ObjKind::ModePortal:
-                if (stepNum >= 5) return true;
+                if (stepNum >= 2) return true;
+                break;
+            case ObjKind::SizePortalNormal:
+                mini = false;
+                break;
+            case ObjKind::SizePortalMini:
+                mini = true;
                 break;
             default:
                 break;
@@ -487,13 +503,14 @@ inline ProbeOutcome simulateCandidate(
         float vy = p.onGround ? 0.0f : p.vy0;
         float g = -kCubeGrav * gravSign;
         bool onG = p.onGround && !p.isUfo;
+        bool curMini = p.mini;
         bool startedInSolid = hitsSolidCore(local, x, y, p.halfW, p.halfH);
         int lastPortal = -1;
 
         int steps = std::max(1, static_cast<int>(std::ceil(horizonSec / dt)));
         for (int s = 1; s <= steps; ++s) {
             x += p.vx * dt;
-            if (processPortalsAndPads(local, lastPortal, x, y, p.halfW, p.halfH, p.mini, gravSign, vy, g, onG, s)) {
+            if (processPortalsAndPads(local, lastPortal, x, y, p.halfW, p.halfH, curMini, gravSign, vy, g, onG, s)) {
                 return { targetEndX, false };
             }
             bool curUp = (gravSign < 0.0f);
@@ -560,22 +577,40 @@ inline ProbeOutcome simulateCandidate(
     float x = xClick, y = yClick, vy = 0.0f;
     float g = -kCubeGrav * gravSign;
     bool onG = false;
+    bool curMini = p.mini;
     int lastPortal = -1;
 
     if (clickWasOrb) {
         switch (orbKind) {
-            case ObjKind::YellowOrb: vy = (p.mini ? 483.0f : 603.7f) * gravSign; break;
-            case ObjKind::PinkOrb:   vy = (p.mini ? 362.9f : 453.6f) * gravSign; break;
-            case ObjKind::RedOrb:    vy = (p.mini ? 639.4f : 799.2f) * gravSign; break;
+            case ObjKind::YellowOrb: vy = (curMini ? 483.0f : 603.7f) * gravSign; break;
+            case ObjKind::PinkOrb:   vy = (curMini ? 362.9f : 453.6f) * gravSign; break;
+            case ObjKind::RedOrb:    vy = (curMini ? 639.4f : 799.2f) * gravSign; break;
             case ObjKind::BlueOrb:   gravSign = -gravSign; g = -kCubeGrav * gravSign; vy = -210.0f * gravSign; break;
-            case ObjKind::GreenOrb:  gravSign = -gravSign; g = -kCubeGrav * gravSign; vy = -(p.mini ? 483.0f : 603.7f) * gravSign; break;
+            case ObjKind::GreenOrb:  gravSign = -gravSign; g = -kCubeGrav * gravSign; vy = -(curMini ? 483.0f : 603.7f) * gravSign; break;
             case ObjKind::BlackOrb:  vy = -864.0f * gravSign; break;
             case ObjKind::DashOrb:   vy = 0.0f; g = 0.0f; break;
+            case ObjKind::SpiderOrb: {
+                float destY = y;
+                if (!findSpiderDestY(local, x, y, p.halfW, p.halfH, gravSign < 0.0f, destY)) {
+                    return { x, true };
+                }
+                y = destY;
+                if (hitsHazard(local, x, y, hazHW, hazHH, false)) return { x, true };
+                gravSign = -gravSign;
+                vy = 0.0f;
+                g = 0.0f;
+                onG = true;
+                break;
+            }
+            case ObjKind::TriggerOrb:
+                // Square/Toggle/Teleport orb triggers custom level actions (scale/launch/teleport):
+                // valid window is the safe overlap interval with the orb.
+                return { targetEndX, false };
             default:                 vy = 603.7f * gravSign; break;
         }
     } else if (p.isUfo) {
-        vy = (p.mini ? 388.0f : 432.0f) * gravSign;
-        g = (p.mini ? -2790.0f : -2385.0f) * gravSign;
+        vy = (curMini ? 388.0f : 432.0f) * gravSign;
+        g = (curMini ? -2790.0f : -2385.0f) * gravSign;
     } else if (p.isBall) {
         gravSign = -gravSign;
         vy = -135.0f * gravSign;
@@ -592,11 +627,13 @@ inline ProbeOutcome simulateCandidate(
         g = 0.0f;
         onG = true;
     } else {
-        vy = (p.mini ? kCubeVyMini : kCubeVyNormal) * gravSign;
+        vy = (curMini ? kCubeVyMini : kCubeVyNormal) * gravSign;
         g = -kCubeGrav * gravSign;
     }
 
-    (void)processPortalsAndPads(local, lastPortal, x, y, p.halfW, p.halfH, p.mini, gravSign, vy, g, onG, 0);
+    if (processPortalsAndPads(local, lastPortal, x, y, p.halfW, p.halfH, curMini, gravSign, vy, g, onG, 0)) {
+        return { targetEndX, false };
+    }
 
     bool startedInSolid = hitsSolidCore(local, x, y, p.halfW, p.halfH);
     int maxSteps = std::max(1, static_cast<int>(std::ceil((targetEndX - x) / (p.vx * dt)))) + 2;
@@ -605,35 +642,32 @@ inline ProbeOutcome simulateCandidate(
     for (int s = 1; s <= maxSteps && x < targetEndX; ++s) {
         x += p.vx * dt;
 
-        if (processPortalsAndPads(local, lastPortal, x, y, p.halfW, p.halfH, p.mini, gravSign, vy, g, onG, s)) {
+        if (processPortalsAndPads(local, lastPortal, x, y, p.halfW, p.halfH, curMini, gravSign, vy, g, onG, s)) {
             return { targetEndX, false };
         }
 
         bool curUpsideDown = (gravSign < 0.0f);
 
-        bool justLanded = false;
         if (!onG) {
             y += vy * dt;
             vy += g * dt;
 
-            if (s >= 3 && touchesOtherOrb(local, orbIdx, x, y, p.halfW, p.halfH)) {
+            if (s >= 4 && touchesOtherOrb(local, orbIdx, x, y, p.halfW, p.halfH)) {
                 return { targetEndX, false };
             }
 
             if (y <= p.halfH && !curUpsideDown) {
                 y = p.halfH;
                 vy = 0.0f;
-                if (!p.isUfo && s >= 3) {
+                if (s >= 4) {
                     onG = true;
-                    justLanded = true;
                 }
-            } else if (!p.isUfo && s >= 3 && (vy * gravSign < 0.0f)) {
+            } else if (s >= 3 && (vy * gravSign < 0.0f)) {
                 float supY = y;
                 if (findSupportY(local, x, y, p.halfW, p.halfH, curUpsideDown, supY)) {
                     y = supY;
                     vy = 0.0f;
                     onG = true;
-                    justLanded = true;
                 }
             }
         } else {
@@ -645,10 +679,6 @@ inline ProbeOutcome simulateCandidate(
 
         if (hitsHazard(local, x, y, hazHW, hazHH, false)) return { x, true };
         if ((!startedInSolid || s > 6) && hitsSolidCore(local, x, y, p.halfW, p.halfH)) return { x, true };
-
-        if (justLanded) {
-            return { targetEndX, false };
-        }
     }
     return { targetEndX, false };
 }
@@ -683,7 +713,7 @@ inline double scanWindowPass(
     bool foundFineSurvive = false;
     if (!outAnySurvived) {
         constexpr float kFineStep = 1.0f / 960.0f;
-        for (int r = 0; r <= 24; ++r) {
+        for (int r = 0; r <= 12; ++r) {
             for (int sign = 1; sign >= -1; sign -= 2) {
                 if (r == 0 && sign == -1) continue;
                 float dT = static_cast<float>(r * sign) * kFineStep;
@@ -845,10 +875,10 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
     bool checkGroundSupp = p.onGround && !clickWasOrb &&
         hasGroundSupport(local, p.x0, p.y0, p.halfW, p.halfH, p.upsideDown);
 
-    float horizonSec = 0.44f;
-    if (clickWasOrb) horizonSec = 0.28f;
-    else if (p.isUfo) horizonSec = p.mini ? 0.15f : 0.18f;
-    else if (p.isBall || p.isSpider) horizonSec = 0.24f;
+    float horizonSec = 0.48f;
+    if (clickWasOrb) horizonSec = 0.26f;
+    else if (p.isUfo) horizonSec = p.mini ? 0.13f : 0.16f;
+    else if (p.isBall || p.isSpider) horizonSec = 0.22f;
 
     if (!clickWasOrb) {
         auto noClick = simulateCandidate(p, local, 0.0f, -1, checkGroundSupp, false, horizonSec, 1.0f);
@@ -867,12 +897,6 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
         double fRelax = scanWindowPass(p, local, -1, checkGroundSupp, horizonSec, 0.90f, refFps, anySurvRelax, allSurvRelax);
         if (anySurvRelax && fRelax > 0.0) {
             frames = std::clamp(fRelax * 0.35, 0.45 * (refFps / 240.0), 1.65 * (refFps / 240.0));
-        } else if (!anySurvRelax && !allSurvRelax) {
-            bool anySurvTight = false, allSurvTight = false;
-            double fTight = scanWindowPass(p, local, -1, checkGroundSupp, horizonSec, 0.82f, refFps, anySurvTight, allSurvTight);
-            if (anySurvTight && fTight > 0.0) {
-                frames = std::clamp(fTight * 0.25, 0.45 * (refFps / 240.0), 1.35 * (refFps / 240.0));
-            }
         }
     }
 

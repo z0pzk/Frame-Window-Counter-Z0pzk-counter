@@ -3,6 +3,7 @@
 #include "AudioManager.hpp"
 #include "Config.hpp"
 #include "InternalRenderer.hpp"
+#include "MacroStore.hpp"
 #include "MarkerStore.hpp"
 #include "TierSoundStore.hpp"
 #include <Geode/ui/TextInput.hpp>
@@ -21,7 +22,11 @@ private:
     ModConfig m_cfg;
     std::function<void()> m_onChanged;
     std::function<void()> m_onStartExactScan;
+    std::function<void()> m_onWatchMacro;
     std::function<void()> m_onToggleRender;
+    std::string m_levelName;
+    std::vector<DiscoveredMacro> m_discoveredMacros;
+    int m_macroPage = 0;
     size_t m_recordedRunClicks = 0;
     bool m_isRenderingNow = false;
     float m_currentPlayerX = 0.0f;
@@ -138,14 +143,14 @@ private:
         m_tabMenu->setPosition({ 0.0f, 0.0f });
         m_panel->addChild(m_tabMenu, 10);
 
-        const char* names[5] = { "General", "HUD", "Audio", "Manual", "Render" };
-        float tabW = 76.0f;
-        float gap = 6.0f;
-        float totalW = 5 * tabW + 4 * gap;
+        const char* names[6] = { "Counter", "Macro", "HUD", "Audio", "Manual", "Render" };
+        float tabW = 64.0f;
+        float gap = 5.0f;
+        float totalW = 6 * tabW + 5 * gap;
         float startX = (kPanelW - totalW) * 0.5f + tabW * 0.5f;
         float tabY = kPanelH - 46.0f;
 
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < 6; ++i) {
             bool active = (m_activeTab == i);
             auto* spr = ButtonSprite::create(
                 names[i],
@@ -198,15 +203,26 @@ private:
         if (m_activeTab == 0) {
             addCheckboxRow(m_contentNode, menu, "Enable Mod", m_cfg.enabled, 100, leftX, topY);
 
-            std::string scanTxt = m_recordedRunClicks > 0
-                ? fmt::format("Scan Exact ({})", m_recordedRunClicks)
-                : "Scan Exact (0)";
+            auto const& activeMac = MacroStore::get().active();
+            bool hasMac = !activeMac.empty();
+            size_t availClicks = hasMac ? activeMac.clickCount() : m_recordedRunClicks;
+
+            std::string scanTxt = hasMac
+                ? fmt::format("ANALYZE MACRO ({})", availClicks)
+                : fmt::format("ANALYZE RUN ({})", availClicks);
             auto* scanBtn = CCMenuItemSpriteExtra::create(
-                makeMiniBtn(scanTxt.c_str(), 150.0f, 22.0f, m_recordedRunClicks > 0 ? "GJ_button_01.png" : "GJ_button_04.png"),
+                makeMiniBtn(scanTxt.c_str(), 148.0f, 24.0f, availClicks > 0 ? "GJ_button_01.png" : "GJ_button_04.png"),
                 this, menu_selector(SettingsPopup::onStartScanBtn)
             );
-            scanBtn->setPosition({ rightX + colW - 75.0f, topY });
+            scanBtn->setPosition({ rightX + 74.0f, topY });
             menu->addChild(scanBtn);
+
+            auto* watchBtn = CCMenuItemSpriteExtra::create(
+                makeMiniBtn("WATCH", 52.0f, 24.0f, hasMac ? "GJ_button_02.png" : "GJ_button_04.png"),
+                this, menu_selector(SettingsPopup::onWatchMacroBtn)
+            );
+            watchBtn->setPosition({ rightX + colW - 26.0f, topY });
+            menu->addChild(watchBtn);
 
             addLabel(m_contentNode, "Mode:", leftX, topY - 30.0f, 0.34f, "goldFont.fnt");
             bool isAuto = (m_cfg.mode == CounterMode::Auto);
@@ -281,23 +297,115 @@ private:
             addStepperRow(m_contentNode, menu, "Circle Size", fmt::format("{:.1f}x", m_cfg.circleScale), 200, 201, leftX, topY - 156.0f, colW);
             addCheckboxRow(m_contentNode, menu, "Auto Comments", m_cfg.showAutoComments, 105, rightX, topY - 156.0f);
 
-#ifdef GEODE_IS_ANDROID
-            auto* tip = CCLabelBMFont::create(
-                "v10.3 Android64: Full Auto + Scan Exact + Touch/Bot support + Portals/Sawblades physics.",
-                "chatFont.fnt"
-            );
-#else
-            auto* tip = CCLabelBMFont::create(
-                "v10.3: Gravity Portals/Pads, Circular Sawblades, Fixed Ball/BlueOrb flip, Full-Level Scan Exact.",
-                "chatFont.fnt"
-            );
-#endif
-            tip->setScale(0.48f);
-            tip->setColor(ccc3(195, 202, 214));
+            std::string statusLine = hasMac
+                ? fmt::format("Loaded Macro: [{}] {} ({} clicks @ {:.0f} FPS)", activeMac.sourceBot, activeMac.name, activeMac.clickCount(), activeMac.sourceFps)
+                : std::string("No macro loaded — open Macro tab to load Silicate (.slc), xdBot (.gdr/.xd), or Eclipse (.gdr2).");
+            auto* tip = CCLabelBMFont::create(statusLine.c_str(), "chatFont.fnt");
+            tip->setScale(0.47f);
+            tip->setColor(hasMac ? ccc3(130, 245, 165) : ccc3(195, 202, 214));
             tip->setPosition({ kPanelW * 0.5f, 24.0f });
             m_contentNode->addChild(tip, 3);
         }
         else if (m_activeTab == 1) {
+            auto const& activeMac = MacroStore::get().active();
+            std::string activeStr = activeMac.empty()
+                ? "Active Macro: None (using Live Run)"
+                : fmt::format("Active: [{}] {} ({} clicks)", activeMac.sourceBot, activeMac.name, activeMac.clickCount());
+            addLabel(m_contentNode, activeStr, leftX, topY + 2.0f, 0.30f, "goldFont.fnt",
+                     activeMac.empty() ? ccc3(210, 215, 225) : ccc3(120, 245, 155));
+
+            auto* refreshBtn = CCMenuItemSpriteExtra::create(
+                makeMiniBtn("Refresh", 56.0f, 20.0f, "GJ_button_02.png"),
+                this, menu_selector(SettingsPopup::onMacroRefreshBtn)
+            );
+            refreshBtn->setPosition({ rightX + colW - 86.0f, topY + 2.0f });
+            menu->addChild(refreshBtn);
+
+            auto* clearBtn = CCMenuItemSpriteExtra::create(
+                makeMiniBtn("Clear", 48.0f, 20.0f, activeMac.empty() ? "GJ_button_04.png" : "GJ_button_06.png"),
+                this, menu_selector(SettingsPopup::onMacroClearBtn)
+            );
+            clearBtn->setPosition({ rightX + colW - 28.0f, topY + 2.0f });
+            menu->addChild(clearBtn);
+
+            constexpr int kPerPage = 5;
+            int total = static_cast<int>(m_discoveredMacros.size());
+            int totalPages = std::max(1, (total + kPerPage - 1) / kPerPage);
+            m_macroPage = std::clamp(m_macroPage, 0, totalPages - 1);
+
+            if (total == 0) {
+                auto* emptyLbl = CCLabelBMFont::create(
+                    "No macros found in Silicate / xdBot / Eclipse / FWC folders.
+"
+                    "Record a macro in Silicate (.slc), xdBot (.gdr/.xd), or Eclipse (.gdr2), then press Refresh.",
+                    "chatFont.fnt"
+                );
+                emptyLbl->setScale(0.54f);
+                emptyLbl->setColor(ccc3(210, 218, 232));
+                emptyLbl->setPosition({ kPanelW * 0.5f, topY - 76.0f });
+                m_contentNode->addChild(emptyLbl, 3);
+            } else {
+                int startIdx = m_macroPage * kPerPage;
+                float rowY = topY - 26.0f;
+                for (int r = 0; r < kPerPage && (startIdx + r) < total; ++r) {
+                    auto const& dm = m_discoveredMacros[static_cast<size_t>(startIdx + r)];
+                    ccColor3B tagCol = ccc3(120, 220, 255);
+                    if (dm.botTag == "SLC") tagCol = ccc3(195, 130, 255);
+                    else if (dm.botTag == "XDB") tagCol = ccc3(255, 195, 95);
+                    else if (dm.botTag == "ECL") tagCol = ccc3(110, 240, 165);
+
+                    addLabel(m_contentNode, fmt::format("[{}]", dm.botTag), leftX, rowY, 0.30f, "bigFont.fnt", tagCol);
+
+                    std::string shortName = dm.displayName;
+                    if (shortName.size() > 30) shortName = shortName.substr(0, 27) + "...";
+                    addLabel(m_contentNode, shortName, leftX + 46.0f, rowY, 0.30f, "bigFont.fnt",
+                             dm.matchesLevel ? ccc3(135, 250, 155) : ccc3(240, 244, 250));
+
+                    bool isLoaded = (!activeMac.empty() && activeMac.path == dm.fullPath);
+                    auto* loadBtn = CCMenuItemSpriteExtra::create(
+                        makeMiniBtn(isLoaded ? "LOADED" : "LOAD", 56.0f, 19.0f, isLoaded ? "GJ_button_01.png" : "GJ_button_02.png"),
+                        this, menu_selector(SettingsPopup::onMacroLoadBtn)
+                    );
+                    loadBtn->setTag(startIdx + r);
+                    loadBtn->setPosition({ rightX + colW - 28.0f, rowY });
+                    menu->addChild(loadBtn);
+                    rowY -= 25.0f;
+                }
+            }
+
+            if (totalPages > 1) {
+                auto* prevB = CCMenuItemSpriteExtra::create(
+                    makeMiniBtn("< Prev", 52.0f, 19.0f, "GJ_button_04.png"),
+                    this, menu_selector(SettingsPopup::onMacroPageBtn)
+                );
+                prevB->setTag(-1);
+                prevB->setPosition({ leftX + 28.0f, 38.0f });
+                menu->addChild(prevB);
+
+                auto* pgLbl = CCLabelBMFont::create(fmt::format("Page {} / {}", m_macroPage + 1, totalPages).c_str(), "goldFont.fnt");
+                pgLbl->setScale(0.46f);
+                pgLbl->setPosition({ kPanelW * 0.5f, 38.0f });
+                m_contentNode->addChild(pgLbl, 3);
+
+                auto* nextB = CCMenuItemSpriteExtra::create(
+                    makeMiniBtn("Next >", 52.0f, 19.0f, "GJ_button_04.png"),
+                    this, menu_selector(SettingsPopup::onMacroPageBtn)
+                );
+                nextB->setTag(1);
+                nextB->setPosition({ rightX + colW - 28.0f, 38.0f });
+                menu->addChild(nextB);
+            }
+
+            auto* mHint = CCLabelBMFont::create(
+                "Auto-scans Silicate (peony.silicate), xdBot (zilko.xdbot), Eclipse & FWC macros/ folders.",
+                "chatFont.fnt"
+            );
+            mHint->setScale(0.45f);
+            mHint->setColor(ccc3(185, 195, 212));
+            mHint->setPosition({ kPanelW * 0.5f, 20.0f });
+            m_contentNode->addChild(mHint, 3);
+        }
+        else if (m_activeTab == 2) {
             addCheckboxRow(m_contentNode, menu, "Top-Left Table", m_cfg.showTierTable, 110, leftX, topY);
             addCheckboxRow(m_contentNode, menu, "ms & Hz Readout", m_cfg.showMsHz, 111, rightX, topY);
 
@@ -354,7 +462,7 @@ private:
             });
             m_contentNode->addChild(precInput, 8);
         }
-        else if (m_activeTab == 2) {
+        else if (m_activeTab == 3) {
             auto tiers = currentTiers();
             int ovCount = TierSoundStore::get().countActiveOverrides(tiers);
 
@@ -527,7 +635,7 @@ private:
                 m_contentNode->addChild(tip, 3);
             }
         }
-        else if (m_activeTab == 3) {
+        else if (m_activeTab == 4) {
             auto& markers = MarkerStore::get().markers();
 
             addCheckboxRow(m_contentNode, menu, "Capture Clicks", m_cfg.captureToManual, 130, leftX, topY);
@@ -767,10 +875,11 @@ private:
     }
 
     void onStartScanBtn(CCObject*) {
-        if (m_recordedRunClicks == 0) {
+        bool hasMac = MacroStore::get().hasMacro();
+        if (!hasMac && m_recordedRunClicks == 0) {
             FLAlertLayer::create(
-                "No Clicks Recorded Yet",
-                "Play the level (or run your bot) for one attempt first so FWC records your clicks, then press <cg>Scan Exact</c>!",
+                "No Macro or Run",
+                "Load a macro in the <cy>Macro</c> tab (Silicate / xdBot / Eclipse), or play the level once, then press <cg>ANALYZE</c>.",
                 "OK"
             )->show();
             return;
@@ -778,6 +887,48 @@ private:
         auto cb = m_onStartExactScan;
         this->removeFromParent();
         if (cb) cb();
+    }
+
+    void onWatchMacroBtn(CCObject*) {
+        if (!MacroStore::get().hasMacro()) {
+            FLAlertLayer::create(
+                "No Macro Loaded",
+                "Open the <cy>Macro</c> tab and load a Silicate, xdBot, or Eclipse macro first.",
+                "OK"
+            )->show();
+            return;
+        }
+        auto cb = m_onWatchMacro;
+        this->removeFromParent();
+        if (cb) cb();
+    }
+
+    void onMacroRefreshBtn(CCObject*) {
+        m_discoveredMacros = MacroStore::get().discoverMacros(m_levelName);
+        m_macroPage = 0;
+        rebuildContent();
+    }
+
+    void onMacroClearBtn(CCObject*) {
+        MacroStore::get().clear();
+        rebuildContent();
+    }
+
+    void onMacroLoadBtn(CCObject* sender) {
+        int idx = static_cast<CCNode*>(sender)->getTag();
+        if (idx < 0 || idx >= static_cast<int>(m_discoveredMacros.size())) return;
+        auto const& dm = m_discoveredMacros[static_cast<size_t>(idx)];
+        if (MacroStore::get().loadFromFile(dm.fullPath, dm.sourceBot)) {
+            m_activeTab = 0;
+            rebuildContent();
+        } else {
+            FLAlertLayer::create("Macro Load Failed", MacroStore::get().lastError().c_str(), "OK")->show();
+        }
+    }
+
+    void onMacroPageBtn(CCObject* sender) {
+        m_macroPage += static_cast<CCNode*>(sender)->getTag();
+        rebuildContent();
     }
 
     void onToggleRenderBtn(CCObject*) {
@@ -1060,7 +1211,9 @@ private:
     bool setup(
         std::function<void()> onChanged,
         std::function<void()> onStartExactScan,
+        std::function<void()> onWatchMacro,
         std::function<void()> onToggleRender,
+        std::string const& levelName,
         size_t recordedClicks,
         bool isRenderingNow,
         float playerX,
@@ -1077,7 +1230,10 @@ private:
         m_cfg = ModConfig::load();
         m_onChanged = std::move(onChanged);
         m_onStartExactScan = std::move(onStartExactScan);
+        m_onWatchMacro = std::move(onWatchMacro);
         m_onToggleRender = std::move(onToggleRender);
+        m_levelName = levelName;
+        m_discoveredMacros = MacroStore::get().discoverMacros(m_levelName);
         m_recordedRunClicks = recordedClicks;
         m_isRenderingNow = isRenderingNow;
         m_currentPlayerX = playerX;
@@ -1110,14 +1266,16 @@ public:
     static SettingsPopup* create(
         std::function<void()> onChanged,
         std::function<void()> onStartExactScan,
+        std::function<void()> onWatchMacro,
         std::function<void()> onToggleRender,
+        std::string const& levelName,
         size_t recordedClicks,
         bool isRenderingNow,
         float playerX,
         float playerY
     ) {
         auto* ret = new SettingsPopup();
-        if (ret && ret->setup(std::move(onChanged), std::move(onStartExactScan), std::move(onToggleRender), recordedClicks, isRenderingNow, playerX, playerY)) {
+        if (ret && ret->setup(std::move(onChanged), std::move(onStartExactScan), std::move(onWatchMacro), std::move(onToggleRender), levelName, recordedClicks, isRenderingNow, playerX, playerY)) {
             ret->autorelease();
             return ret;
         }

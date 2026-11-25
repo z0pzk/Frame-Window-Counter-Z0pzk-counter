@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,19 @@ private:
     CCNode* m_statusBanner = nullptr;
     CCLabelBMFont* m_statusTitleLbl = nullptr;
     CCLabelBMFont* m_statusHintLbl = nullptr;
+
+    CCNode* m_analyzeRoot = nullptr;
+    CCLayerColor* m_analyzeBg = nullptr;
+    CCLabelBMFont* m_analyzeTitleLbl = nullptr;
+    CCLabelBMFont* m_analyzeLevelLbl = nullptr;
+    CCLabelBMFont* m_analyzePctLbl = nullptr;
+    CCLabelBMFont* m_analyzeStepLbl = nullptr;
+    CCLayerColor* m_analyzeBarFill = nullptr;
+    CCLabelBMFont* m_analyzeWatchBtnLbl = nullptr;
+    std::vector<CCLabelBMFont*> m_analyzeTierLbls;
+    std::function<void()> m_onToggleScanWatch;
+    std::function<void()> m_onCancelScan;
+    static constexpr float kAnalyzeBarW = 260.0f;
 
     CCNode* m_introRoot = nullptr;
     CCLayerColor* m_introBg = nullptr;
@@ -123,6 +137,116 @@ private:
         m_statusHintLbl->setColor(ccc3(215, 222, 235));
         m_statusHintLbl->setPosition({ 0.0f, -8.5f });
         m_statusBanner->addChild(m_statusHintLbl, 2);
+    }
+
+    void onAnalyzeWatchBtn(CCObject*) {
+        if (m_onToggleScanWatch) m_onToggleScanWatch();
+    }
+
+    void onAnalyzeCancelBtn(CCObject*) {
+        if (m_onCancelScan) m_onCancelScan();
+    }
+
+    void buildAnalyzeOverlay() {
+        if (m_analyzeRoot) {
+            m_analyzeRoot->removeFromParent();
+            m_analyzeRoot = nullptr;
+        }
+        m_analyzeTierLbls.clear();
+        auto winSize = CCDirector::sharedDirector()->getWinSize();
+
+        m_analyzeRoot = CCNode::create();
+        m_analyzeRoot->setVisible(false);
+        this->addChild(m_analyzeRoot, 75);
+
+        m_analyzeBg = CCLayerColor::create(ccc4(10, 14, 24, 246), winSize.width, winSize.height);
+        m_analyzeRoot->addChild(m_analyzeBg, 0);
+
+        float cx = winSize.width * 0.5f;
+        float cy = winSize.height * 0.5f;
+
+        m_analyzeTitleLbl = CCLabelBMFont::create("ANALYZING", "bigFont.fnt");
+        m_analyzeTitleLbl->setScale(0.72f);
+        m_analyzeTitleLbl->setColor(ccc3(245, 250, 255));
+        m_analyzeTitleLbl->setPosition({ cx, cy + 54.0f });
+        m_analyzeRoot->addChild(m_analyzeTitleLbl, 3);
+
+        m_analyzeLevelLbl = CCLabelBMFont::create(m_levelName.c_str(), "goldFont.fnt");
+        m_analyzeLevelLbl->setScale(0.56f);
+        m_analyzeLevelLbl->setPosition({ cx, cy + 31.0f });
+        m_analyzeRoot->addChild(m_analyzeLevelLbl, 3);
+
+        auto* barBg = CCLayerColor::create(ccc4(28, 36, 56, 255), kAnalyzeBarW, 11.0f);
+        barBg->setPosition({ cx - kAnalyzeBarW * 0.5f, cy + 5.0f });
+        m_analyzeRoot->addChild(barBg, 2);
+
+        m_analyzeBarFill = CCLayerColor::create(ccc4(78, 196, 255, 255), kAnalyzeBarW, 11.0f);
+        m_analyzeBarFill->setAnchorPoint({ 0.0f, 0.0f });
+        m_analyzeBarFill->ignoreAnchorPointForPosition(false);
+        m_analyzeBarFill->setPosition({ cx - kAnalyzeBarW * 0.5f, cy + 5.0f });
+        m_analyzeBarFill->setScaleX(0.01f);
+        m_analyzeRoot->addChild(m_analyzeBarFill, 3);
+
+        m_analyzePctLbl = CCLabelBMFont::create("0%", "bigFont.fnt");
+        m_analyzePctLbl->setScale(0.56f);
+        m_analyzePctLbl->setColor(ccc3(140, 232, 255));
+        m_analyzePctLbl->setPosition({ cx, cy - 16.0f });
+        m_analyzeRoot->addChild(m_analyzePctLbl, 3);
+
+        m_analyzeStepLbl = CCLabelBMFont::create("PREPARING...", "chatFont.fnt");
+        m_analyzeStepLbl->setScale(0.68f);
+        m_analyzeStepLbl->setColor(ccc3(205, 215, 232));
+        m_analyzeStepLbl->setPosition({ cx, cy - 35.0f });
+        m_analyzeRoot->addChild(m_analyzeStepLbl, 3);
+
+        auto* menu = CCMenu::create();
+        menu->setPosition({ 0.0f, 0.0f });
+        m_analyzeRoot->addChild(menu, 5);
+
+        auto makeOverlayBtn = [&](const char* txt, const char* tex, float w, CCLabelBMFont** outLbl) -> CCNode* {
+            auto* root = CCNode::create();
+            root->setContentSize({ w, 26.0f });
+            auto* bg = CCScale9Sprite::create(tex);
+            bg->setContentSize({ w, 26.0f });
+            bg->setPosition({ w * 0.5f, 13.0f });
+            root->addChild(bg, 0);
+            auto* lbl = CCLabelBMFont::create(txt, "bigFont.fnt");
+            lbl->setScale(0.36f);
+            lbl->setPosition({ w * 0.5f, 13.5f });
+            root->addChild(lbl, 1);
+            if (outLbl) *outLbl = lbl;
+            return root;
+        };
+
+        auto* watchBtn = CCMenuItemSpriteExtra::create(
+            makeOverlayBtn("WATCH", "GJ_button_02.png", 86.0f, &m_analyzeWatchBtnLbl),
+            this, menu_selector(HudOverlay::onAnalyzeWatchBtn)
+        );
+        watchBtn->setPosition({ cx - 50.0f, cy - 66.0f });
+        menu->addChild(watchBtn);
+
+        auto* cancelBtn = CCMenuItemSpriteExtra::create(
+            makeOverlayBtn("CANCEL", "GJ_button_06.png", 86.0f, nullptr),
+            this, menu_selector(HudOverlay::onAnalyzeCancelBtn)
+        );
+        cancelBtn->setPosition({ cx + 50.0f, cy - 66.0f });
+        menu->addChild(cancelBtn);
+
+        // Live tier summary on left side during scan
+        auto tiers = buildTiers(m_cfg.tableStyle, static_cast<double>(m_cfg.refFps));
+        float leftX = 18.0f;
+        float curY = winSize.height - 20.0f;
+        float stepY = std::min(16.0f, (winSize.height - 40.0f) / static_cast<float>(std::max<size_t>(1, tiers.size())));
+        for (auto const& t : tiers) {
+            auto* lbl = CCLabelBMFont::create(fmt::format("{}: 0", t.label).c_str(), "bigFont.fnt");
+            lbl->setAnchorPoint({ 0.0f, 0.5f });
+            lbl->setScale(0.32f);
+            lbl->setColor(t.color);
+            lbl->setPosition({ leftX, curY });
+            m_analyzeRoot->addChild(lbl, 4);
+            m_analyzeTierLbls.push_back(lbl);
+            curY -= stepY;
+        }
     }
 
     void buildLeftHud(bool preserveCounts) {
@@ -374,6 +498,7 @@ public:
         ensureWorldContainer(worldParent);
         buildLeftHud(false);
         buildStatusBanner();
+        buildAnalyzeOverlay();
         buildIntroScreen(false);
         return true;
     }
@@ -424,6 +549,50 @@ public:
     void setStatusBannerTemporaryHidden(bool hidden) {
         if (m_statusBanner) {
             m_statusBanner->setVisible(!hidden);
+        }
+    }
+
+    void setAnalyzeCallbacks(std::function<void()> onToggleWatch, std::function<void()> onCancel) {
+        m_onToggleScanWatch = std::move(onToggleWatch);
+        m_onCancelScan = std::move(onCancel);
+    }
+
+    void setAnalyzeScreen(
+        bool active,
+        std::string const& stepText,
+        float progress01,
+        bool watchMode,
+        std::vector<int> const& liveTierCounts
+    ) {
+        if (!m_analyzeRoot) return;
+        m_analyzeRoot->setVisible(active);
+        if (!active) return;
+
+        float clamped = std::clamp(progress01, 0.0f, 1.0f);
+        if (m_analyzeBg) m_analyzeBg->setVisible(!watchMode);
+        if (m_analyzeTitleLbl) m_analyzeTitleLbl->setVisible(!watchMode);
+        if (m_analyzeLevelLbl) m_analyzeLevelLbl->setVisible(!watchMode);
+        if (m_analyzeBarFill) {
+            m_analyzeBarFill->setScaleX(std::max(0.01f, clamped));
+            m_analyzeBarFill->setVisible(!watchMode);
+        }
+        if (m_analyzePctLbl) {
+            m_analyzePctLbl->setString(fmt::format("{}%", static_cast<int>(std::round(clamped * 100.0f))).c_str());
+            m_analyzePctLbl->setVisible(!watchMode);
+        }
+        if (m_analyzeStepLbl) {
+            m_analyzeStepLbl->setString(stepText.c_str());
+        }
+        if (m_analyzeWatchBtnLbl) {
+            m_analyzeWatchBtnLbl->setString(watchMode ? "HIDE" : "WATCH");
+        }
+        auto tiers = buildTiers(m_cfg.tableStyle, static_cast<double>(m_cfg.refFps));
+        for (size_t k = 0; k < m_analyzeTierLbls.size() && k < tiers.size(); ++k) {
+            int c = (k < liveTierCounts.size()) ? liveTierCounts[k] : 0;
+            if (m_analyzeTierLbls[k]) {
+                m_analyzeTierLbls[k]->setString(fmt::format("{}: {}", tiers[k].label, c).c_str());
+                m_analyzeTierLbls[k]->setVisible(!watchMode);
+            }
         }
     }
 
