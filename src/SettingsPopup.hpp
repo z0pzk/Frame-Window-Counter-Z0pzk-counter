@@ -335,8 +335,7 @@ private:
 
             if (total == 0) {
                 auto* emptyLbl = CCLabelBMFont::create(
-                    "No macros found in Silicate / xdBot / Eclipse / FWC folders.
-"
+                    "No macros found in Silicate / xdBot / Eclipse / FWC folders.\n"
                     "Record a macro in Silicate (.slc), xdBot (.gdr/.xd), or Eclipse (.gdr2), then press Refresh.",
                     "chatFont.fnt"
                 );
