@@ -61,7 +61,7 @@ struct SimParams {
 
 constexpr float kCubeVyNormal = 603.722f;
 constexpr float kCubeVyMini   = 482.977f;
-constexpr float kCubeGrav     = 2794.108f;
+constexpr float kCubeGrav     = 3104.565f;
 
 inline bool isOrbKind(ObjKind k) {
     uint8_t v = static_cast<uint8_t>(k);
@@ -228,8 +228,8 @@ inline int findActiveOrbIndex(std::vector<SpatialObj> const& local, float cx, fl
 }
 
 inline bool touchesOtherOrb(std::vector<SpatialObj> const& local, int excludeIdx, float cx, float cy, float hw, float hh) {
-    float px0 = cx - hw - 5.0f, px1 = cx + hw + 5.0f;
-    float py0 = cy - hh - 5.0f, py1 = cy + hh + 5.0f;
+    float px0 = cx - hw - 3.0f, px1 = cx + hw + 3.0f;
+    float py0 = cy - hh - 3.0f, py1 = cy + hh + 3.0f;
     for (size_t i = 0; i < local.size(); ++i) {
         if (static_cast<int>(i) == excludeIdx) continue;
         auto const& o = local[i];
@@ -454,7 +454,7 @@ inline bool processPortalsAndPads(
                 onG = false;
                 break;
             case ObjKind::ModePortal:
-                if (stepNum >= 2) return true;
+                if (stepNum >= 5) return true;
                 break;
             default:
                 break;
@@ -611,26 +611,29 @@ inline ProbeOutcome simulateCandidate(
 
         bool curUpsideDown = (gravSign < 0.0f);
 
+        bool justLanded = false;
         if (!onG) {
             y += vy * dt;
             vy += g * dt;
 
-            if (s >= 4 && touchesOtherOrb(local, orbIdx, x, y, p.halfW, p.halfH)) {
+            if (s >= 3 && touchesOtherOrb(local, orbIdx, x, y, p.halfW, p.halfH)) {
                 return { targetEndX, false };
             }
 
             if (y <= p.halfH && !curUpsideDown) {
                 y = p.halfH;
                 vy = 0.0f;
-                if (s >= 4) {
+                if (!p.isUfo && s >= 3) {
                     onG = true;
+                    justLanded = true;
                 }
-            } else if (s >= 3 && (vy * gravSign < 0.0f)) {
+            } else if (!p.isUfo && s >= 3 && (vy * gravSign < 0.0f)) {
                 float supY = y;
                 if (findSupportY(local, x, y, p.halfW, p.halfH, curUpsideDown, supY)) {
                     y = supY;
                     vy = 0.0f;
                     onG = true;
+                    justLanded = true;
                 }
             }
         } else {
@@ -642,6 +645,10 @@ inline ProbeOutcome simulateCandidate(
 
         if (hitsHazard(local, x, y, hazHW, hazHH, false)) return { x, true };
         if ((!startedInSolid || s > 6) && hitsSolidCore(local, x, y, p.halfW, p.halfH)) return { x, true };
+
+        if (justLanded) {
+            return { targetEndX, false };
+        }
     }
     return { targetEndX, false };
 }
@@ -676,7 +683,7 @@ inline double scanWindowPass(
     bool foundFineSurvive = false;
     if (!outAnySurvived) {
         constexpr float kFineStep = 1.0f / 960.0f;
-        for (int r = 0; r <= 12; ++r) {
+        for (int r = 0; r <= 24; ++r) {
             for (int sign = 1; sign >= -1; sign -= 2) {
                 if (r == 0 && sign == -1) continue;
                 float dT = static_cast<float>(r * sign) * kFineStep;
@@ -838,10 +845,10 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
     bool checkGroundSupp = p.onGround && !clickWasOrb &&
         hasGroundSupport(local, p.x0, p.y0, p.halfW, p.halfH, p.upsideDown);
 
-    float horizonSec = 0.48f;
-    if (clickWasOrb) horizonSec = 0.26f;
-    else if (p.isUfo) horizonSec = p.mini ? 0.13f : 0.16f;
-    else if (p.isBall || p.isSpider) horizonSec = 0.22f;
+    float horizonSec = 0.44f;
+    if (clickWasOrb) horizonSec = 0.28f;
+    else if (p.isUfo) horizonSec = p.mini ? 0.15f : 0.18f;
+    else if (p.isBall || p.isSpider) horizonSec = 0.24f;
 
     if (!clickWasOrb) {
         auto noClick = simulateCandidate(p, local, 0.0f, -1, checkGroundSupp, false, horizonSec, 1.0f);
@@ -860,6 +867,12 @@ inline double solveAutoWindowFrames(SimParams p, std::vector<SpatialObj> const& 
         double fRelax = scanWindowPass(p, local, -1, checkGroundSupp, horizonSec, 0.90f, refFps, anySurvRelax, allSurvRelax);
         if (anySurvRelax && fRelax > 0.0) {
             frames = std::clamp(fRelax * 0.35, 0.45 * (refFps / 240.0), 1.65 * (refFps / 240.0));
+        } else if (!anySurvRelax && !allSurvRelax) {
+            bool anySurvTight = false, allSurvTight = false;
+            double fTight = scanWindowPass(p, local, -1, checkGroundSupp, horizonSec, 0.82f, refFps, anySurvTight, allSurvTight);
+            if (anySurvTight && fTight > 0.0) {
+                frames = std::clamp(fTight * 0.25, 0.45 * (refFps / 240.0), 1.35 * (refFps / 240.0));
+            }
         }
     }
 
