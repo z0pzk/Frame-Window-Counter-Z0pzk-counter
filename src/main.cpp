@@ -946,8 +946,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
             if (!savedPath.empty()) {
                 FLAlertLayer::create(
                     "Macro Saved!",
-                    fmt::format("Saved <cg>{}</c> clicks (@ 240 FPS) and loaded as Active Macro!
-<cy>{}</c>", clicks, savedPath).c_str(),
+                    fmt::format("Saved <cg>{}</c> clicks (@ 240 FPS) and loaded as Active Macro!\n<cy>{}</c>", clicks, savedPath).c_str(),
                     "OK"
                 )->show();
             } else {

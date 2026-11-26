@@ -361,8 +361,7 @@ private:
 
             if (total == 0) {
                 auto* emptyLbl = CCLabelBMFont::create(
-                    "No macros found. Press REC MACRO to record your own run,
-"
+                    "No macros found. Press REC MACRO to record your own run,\n"
                     "or save a macro in Silicate (.slc), xdBot (.gdr2/.xd), or Eclipse.",
                     "chatFont.fnt"
                 );
