@@ -230,6 +230,18 @@ bool safeHasCompleted(PL* pl) {
     }
 }
 
+template <typename PL>
+uint64_t safePhysicsTick(PL* pl, uint64_t fallbackTick) {
+    if (!pl) return fallbackTick;
+    if constexpr (requires { pl->m_gameState.m_currentProgress; }) {
+        return static_cast<uint64_t>(pl->m_gameState.m_currentProgress);
+    } else if constexpr (requires { pl->m_gameState.m_levelTime; }) {
+        return static_cast<uint64_t>(std::llround(std::max(0.0, static_cast<double>(pl->m_gameState.m_levelTime) * 240.0)));
+    } else {
+        return fallbackTick;
+    }
+}
+
 inline uint8_t computeSlopeType(GameObject* obj) {
     float dx = 1.0f;
     float dy = -1.0f;
@@ -268,6 +280,8 @@ class $modify(FWCPlayLayer, PlayLayer) {
         bool prevHolding[2] = { false, false };
         PreStepPlayerSnap preSnap[2];
         uint64_t lastHookTick[2][2] = { { 0, 0 }, { 0, 0 } };
+        float lastClickWorldX[2] = { -1000.0f, -1000.0f };
+        uint64_t lastClickPhysTick[2] = { 0, 0 };
         bool isDeadThisAttempt = false;
         bool completedSavedThisAttempt = false;
         std::vector<PendingClick> pendingClicks;
@@ -661,10 +675,17 @@ class $modify(FWCPlayLayer, PlayLayer) {
         recordInputForScan(player, down, isPlayer1);
 
         if (f.cfg.mode == fwc::CounterMode::Auto || f.cfg.captureToManual) {
-            double estFrames = computeAutoWindowFrames(player, down, !fromHook, pIdx);
-            if (estFrames < 0.0) return;
-
             auto pos = player->getPosition();
+            uint64_t curPTick = safePhysicsTick(this, f.updateTick);
+            if (std::fabs(pos.x - f.lastClickWorldX[pIdx]) < 4.5f && curPTick <= f.lastClickPhysTick[pIdx] + 3) {
+                return;
+            }
+            double estFrames = computeAutoWindowFrames(player, down, !fromHook, pIdx);
+            if (estFrames < 0.0 || estFrames > 12.01) return;
+
+            f.lastClickWorldX[pIdx] = pos.x;
+            f.lastClickPhysTick[pIdx] = curPTick;
+
             if (f.cfg.captureToManual) {
                 fwc::MarkerStore::get().addMarker(pos.x, pos.y, estFrames, "");
             }
@@ -984,7 +1005,8 @@ class $modify(FWCPlayLayer, PlayLayer) {
         auto& f = *m_fields.self();
         if (!f.isRecordingMacro || btn != 1 || f.isDeadThisAttempt) return;
         if (m_player1 && m_player1->m_isDead) return;
-        f.recInputs.push_back({ f.recSimTick, down, 1, isP1 });
+        uint64_t recTick = safePhysicsTick(this, f.recSimTick);
+        f.recInputs.push_back({ recTick, down, 1, isP1 });
     }
 
     void stepMacroRecorderTick(float dt) {
@@ -1000,7 +1022,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
             ticks++;
         }
         if (ticks == 0 && dt > 1e-6f) ticks = 1;
-        f.recSimTick += ticks;
+        f.recSimTick = safePhysicsTick(this, f.recSimTick + ticks);
 
         size_t cpCnt = safeCheckpointCount(this);
         if (cpCnt > f.recLastCpCount && m_player1) {
@@ -1042,15 +1064,16 @@ class $modify(FWCPlayLayer, PlayLayer) {
         while (f.watchAccumulator >= kStep && subSteps < 12) {
             f.watchAccumulator -= kStep;
             subSteps++;
+            uint64_t curTick = safePhysicsTick(this, f.watchSimTick);
             while (f.watchNextInputIdx < mac.inputs.size() &&
-                   mac.inputs[f.watchNextInputIdx].tick240 <= f.watchSimTick) {
+                   mac.inputs[f.watchNextInputIdx].tick240 <= curTick) {
                 auto const& in = mac.inputs[f.watchNextInputIdx++];
                 runBaseBtn(in.down, in.button, in.isP1);
             }
             runBaseUpdate(static_cast<float>(kStep));
             runFramePostStep(static_cast<float>(kStep));
             f.updateTick++;
-            f.watchSimTick++;
+            f.watchSimTick = safePhysicsTick(this, f.watchSimTick + 1);
             if (safeHasCompleted(this) || (m_player1 && m_player1->m_isDead)) {
                 runBaseBtn(false, 1, true);
                 runBaseBtn(false, 1, false);
@@ -1080,8 +1103,8 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
         if (f.hasActiveCp && safeCheckpointCount(this) > 0 && !f.cpStack.empty()) {
             auto const cpSnap = f.cpStack.back();
-            f.scanSimTick = cpSnap.simTick;
             PlayLayer::resetLevel();
+            f.scanSimTick = safePhysicsTick(this, cpSnap.simTick);
             if (m_player1 && cpSnap.worldX > 120.0f && m_player1->getPositionX() < 40.0f) {
                 // Checkpoint did not restore; reset cleanly to 0% state to avoid desync
                 f.hasActiveCp = false;
@@ -1495,7 +1518,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
                 fireReplayRange(f.cpStartIdx, i, false);
                 runBaseUpdate(kFixedDt);
-                f.scanSimTick++;
+                f.scanSimTick = safePhysicsTick(this, f.scanSimTick + 1);
 
                 if (safeHasCompleted(this) || f.probeTick > 36000) {
                     finishOrCancelScan(true);
@@ -1582,7 +1605,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 }
                 fireReplayRange(f.cpStartIdx, f.scanClicks.size(), true);
                 runBaseUpdate(kFixedDt);
-                f.scanSimTick++;
+                f.scanSimTick = safePhysicsTick(this, f.scanSimTick + 1);
                 f.probeTick++;
 
                 float postX = m_player1 ? m_player1->getPositionX() : curX;
@@ -1656,7 +1679,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 }
                 fireReplayRange(f.cpStartIdx, f.scanClicks.size(), true);
                 runBaseUpdate(kFixedDt);
-                f.scanSimTick++;
+                f.scanSimTick = safePhysicsTick(this, f.scanSimTick + 1);
                 f.probeTick++;
 
                 float postX = m_player1 ? m_player1->getPositionX() : curX;
@@ -1687,13 +1710,14 @@ class $modify(FWCPlayLayer, PlayLayer) {
             else if (f.scanPhase == ScanPhase::TestSkip) {
                 fireReplayRange(f.cpStartIdx, f.scanClicks.size(), true);
                 runBaseUpdate(kFixedDt);
-                f.scanSimTick++;
+                f.scanSimTick = safePhysicsTick(this, f.scanSimTick + 1);
                 f.probeTick++;
 
                 float postX = m_player1 ? m_player1->getPositionX() : curX;
-                bool passedNextClick = ((f.probeTick - f.baseClickTick) >= minCheckTicks) &&
+                int skipLookahead = std::max(kLookaheadTicks, 64);
+                bool passedNextClick = ((f.probeTick - f.baseClickTick) >= std::max(minCheckTicks, 28)) &&
                                        (postX >= nextClickStopX);
-                bool doneTicks = ((f.probeTick - f.baseClickTick) >= kLookaheadTicks) || passedNextClick;
+                bool doneTicks = ((f.probeTick - f.baseClickTick) >= skipLookahead) || passedNextClick;
                 if (didDie() || doneTicks || safeHasCompleted(this)) {
                     float endX = postX;
                     float reqSkipX = std::min(f.baseEndX - 8.0f, nextClickStopX - 6.0f);
@@ -1734,7 +1758,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 }
                 fireReplayRange(f.cpStartIdx, f.scanClicks.size(), true);
                 runBaseUpdate(kFixedDt);
-                f.scanSimTick++;
+                f.scanSimTick = safePhysicsTick(this, f.scanSimTick + 1);
                 f.probeTick++;
 
                 float postX = m_player1 ? m_player1->getPositionX() : curX;
@@ -1833,12 +1857,16 @@ class $modify(FWCPlayLayer, PlayLayer) {
             else if (f.scanPhase == ScanPhase::Done) {
                 double frames240 = static_cast<double>(1 + f.safeEarly + f.safeLate);
                 double framesScaled = frames240 * (static_cast<double>(f.cfg.refFps) / 240.0);
-                fwc::MarkerStore::get().addMarker(f.baseClickPos.x, f.baseClickPos.y, framesScaled, "");
-                f.totalSolved++;
-                auto tiers = fwc::buildTiers(f.cfg.tableStyle, static_cast<double>(f.cfg.refFps));
-                int ti = fwc::findTierIndex(tiers, fwc::resolveDisplayFrames(framesScaled, f.cfg.cbfMode));
-                if (ti >= 0 && ti < static_cast<int>(f.scanLiveTierCounts.size())) {
-                    f.scanLiveTierCounts[static_cast<size_t>(ti)]++;
+                if (framesScaled <= 12.01) {
+                    fwc::MarkerStore::get().addMarker(f.baseClickPos.x, f.baseClickPos.y, framesScaled, "");
+                    f.totalSolved++;
+                    auto tiers = fwc::buildTiers(f.cfg.tableStyle, static_cast<double>(f.cfg.refFps));
+                    int ti = fwc::findTierIndex(tiers, fwc::resolveDisplayFrames(framesScaled, f.cfg.cbfMode));
+                    if (ti >= 0 && ti < static_cast<int>(f.scanLiveTierCounts.size())) {
+                        f.scanLiveTierCounts[static_cast<size_t>(ti)]++;
+                    }
+                } else {
+                    f.diagSkip++;
                 }
 
                 advanceScanToNextClick();
@@ -1961,6 +1989,8 @@ class $modify(FWCPlayLayer, PlayLayer) {
         f.prevHolding[1] = false;
         f.lastHookTick[0][0] = f.lastHookTick[0][1] = 0;
         f.lastHookTick[1][0] = f.lastHookTick[1][1] = 0;
+        f.lastClickWorldX[0] = f.lastClickWorldX[1] = -1000.0f;
+        f.lastClickPhysTick[0] = f.lastClickPhysTick[1] = 0;
 
         ensureObjectsIndexed();
         fwc::MarkerStore::get().resetTriggers();
@@ -2146,37 +2176,52 @@ class $modify(FWCPauseLayer, PauseLayer) {
         if (popup) popup->show();
     }
 
-    CCNode* makeSquarePauseIcon() {
-        auto* sq = CCScale9Sprite::create("GJ_button_05.png");
-        sq->setContentSize({ 34.0f, 34.0f });
-
-        auto iconPath = (Mod::get()->getResourcesDir() / "fwc_icon.png").string();
-        if (auto* icon = CCSprite::create(iconPath.c_str())) {
-            float maxDim = std::max(icon->getContentSize().width, icon->getContentSize().height);
-            if (maxDim > 1.0f) icon->setScale(22.0f / maxDim);
-            icon->setPosition({ 17.0f, 17.0f });
-            sq->addChild(icon, 1);
-        } else {
-            auto* lbl = CCLabelBMFont::create("FC", "bigFont.fnt");
-            lbl->setScale(0.45f);
-            lbl->setPosition({ 17.0f, 17.5f });
-            sq->addChild(lbl, 1);
+    void onQuickRecToggle(CCObject*) {
+        if (auto* pl = PlayLayer::get()) {
+            auto* fwcPl = static_cast<FWCPlayLayer*>(pl);
+            bool wasRec = fwcPl->isRecordingMacro();
+            fwcPl->toggleRecordMacro();
+            if (!wasRec && fwcPl->isRecordingMacro()) {
+                this->onResume(nullptr);
+            }
         }
+    }
+
+    CCNode* makeSquarePauseIcon() {
+        auto* sq = CCScale9Sprite::create("GJ_button_02.png");
+        sq->setContentSize({ 36.0f, 36.0f });
+        auto* lbl = CCLabelBMFont::create("FC", "bigFont.fnt");
+        lbl->setScale(0.50f);
+        lbl->setPosition({ 18.0f, 18.5f });
+        sq->addChild(lbl, 1);
+        return sq;
+    }
+
+    CCNode* makeRecPauseIcon(bool isRec) {
+        auto* sq = CCScale9Sprite::create(isRec ? "GJ_button_06.png" : "GJ_button_04.png");
+        sq->setContentSize({ 36.0f, 22.0f });
+        auto* lbl = CCLabelBMFont::create(isRec ? "STOP" : "REC", "bigFont.fnt");
+        lbl->setScale(0.32f);
+        lbl->setColor(isRec ? ccc3(255, 255, 255) : ccc3(255, 110, 110));
+        lbl->setPosition({ 18.0f, 11.5f });
+        sq->addChild(lbl, 1);
         return sq;
     }
 
     void customSetup() {
         PauseLayer::customSetup();
 
+        bool recNow = false;
         if (auto* pl = PlayLayer::get()) {
             auto* fwcPl = static_cast<FWCPlayLayer*>(pl);
             if (fwcPl->isScanning()) fwcPl->finishOrCancelScan(false);
             if (fwcPl->isWatchingMacro()) fwcPl->stopWatchMacro();
             if (fwcPl->isRendering()) fwcPl->stopInternalRender(true);
+            recNow = fwcPl->isRecordingMacro();
         }
 
         Ref<PauseLayer> selfRef = this;
-        Loader::get()->queueInMainThread([selfRef]() {
+        Loader::get()->queueInMainThread([selfRef, recNow]() {
             auto* self = static_cast<FWCPauseLayer*>(selfRef.data());
             if (!self || !self->getParent()) return;
 
@@ -2187,22 +2232,33 @@ class $modify(FWCPauseLayer, PauseLayer) {
             );
             btn->setID("fwc-settings-button"_spr);
 
-            if (auto* leftMenu = self->getChildByID("left-button-menu")) {
-                leftMenu->addChild(btn);
-                leftMenu->updateLayout();
-                return;
-            }
+            auto* recBtn = CCMenuItemSpriteExtra::create(
+                self->makeRecPauseIcon(recNow),
+                self,
+                menu_selector(FWCPauseLayer::onQuickRecToggle)
+            );
+            recBtn->setID("fwc-rec-button"_spr);
+
             if (auto* rightMenu = self->getChildByID("right-button-menu")) {
                 rightMenu->addChild(btn);
+                rightMenu->addChild(recBtn);
                 rightMenu->updateLayout();
+                return;
+            }
+            if (auto* leftMenu = self->getChildByID("left-button-menu")) {
+                leftMenu->addChild(btn);
+                leftMenu->addChild(recBtn);
+                leftMenu->updateLayout();
                 return;
             }
 
             auto winSize = CCDirector::sharedDirector()->getWinSize();
             auto* menu = CCMenu::create();
             menu->setPosition({ 0.0f, 0.0f });
-            btn->setPosition({ 34.0f, winSize.height - 96.0f });
+            btn->setPosition({ winSize.width - 34.0f, winSize.height - 96.0f });
+            recBtn->setPosition({ winSize.width - 34.0f, winSize.height - 130.0f });
             menu->addChild(btn);
+            menu->addChild(recBtn);
             self->addChild(menu, 50);
         });
     }

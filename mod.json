@@ -8,9 +8,9 @@
     },
     "id": "z0pzk.frame-window-counter",
     "name": "Frame Window Counter",
-    "version": "v11.4.0",
+    "version": "v12.0.0",
     "developer": "z0pzk",
-    "description": "Frame & CBF Window Counter v11.4 (Windows + Android64) — Silicate (.slc) / xdBot / Eclipse (.gdr2) macro support, built-in macro recorder, Fast (±6f) & Deep (±12f) exact analyzer, and FBMOD-style UI.",
+    "description": "Frame & CBF Window Counter v12.0 (Windows + Android64) — FB-style 4-tab UI, exact 240Hz tick sync (m_currentProgress), <=12 frame cap, built-in REC button on Pause menu, Silicate/xdBot/Eclipse macro support.",
     "resources": {
         "files": [
             "resources/*.wav",
