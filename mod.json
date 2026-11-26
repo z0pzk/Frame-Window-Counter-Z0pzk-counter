@@ -8,7 +8,7 @@
     },
     "id": "z0pzk.frame-window-counter",
     "name": "Frame Window Counter",
-    "version": "v11.2",
+    "version": "v11.3.0",
     "developer": "z0pzk",
     "description": "Frame & CBF Window Counter v10.3 (Windows + Android64 Mobile Port) — exact GD 2.2 physics with Gravity Portals/Pads/Sawblades, Ball/BlueOrb fix, full-level Scan Exact, mobile-safe HUD layout, and per-tier sounds.",
     "resources": {
