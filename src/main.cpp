@@ -233,13 +233,13 @@ bool safeHasCompleted(PL* pl) {
 template <typename PL>
 uint64_t safePhysicsTick(PL* pl, uint64_t fallbackTick) {
     if (!pl) return fallbackTick;
-    if constexpr (requires { pl->m_gameState.m_currentProgress; }) {
-        return static_cast<uint64_t>(pl->m_gameState.m_currentProgress);
-    } else if constexpr (requires { pl->m_gameState.m_levelTime; }) {
-        return static_cast<uint64_t>(std::llround(std::max(0.0, static_cast<double>(pl->m_gameState.m_levelTime) * 240.0)));
-    } else {
-        return fallbackTick;
+    if constexpr (requires { pl->m_gameState.m_levelTime; }) {
+        double lt = static_cast<double>(pl->m_gameState.m_levelTime);
+        if (std::isfinite(lt) && lt >= 0.0) {
+            return static_cast<uint64_t>(std::llround(lt * 240.0));
+        }
     }
+    return fallbackTick;
 }
 
 inline uint8_t computeSlopeType(GameObject* obj) {
@@ -2176,52 +2176,37 @@ class $modify(FWCPauseLayer, PauseLayer) {
         if (popup) popup->show();
     }
 
-    void onQuickRecToggle(CCObject*) {
-        if (auto* pl = PlayLayer::get()) {
-            auto* fwcPl = static_cast<FWCPlayLayer*>(pl);
-            bool wasRec = fwcPl->isRecordingMacro();
-            fwcPl->toggleRecordMacro();
-            if (!wasRec && fwcPl->isRecordingMacro()) {
-                this->onResume(nullptr);
-            }
-        }
-    }
-
     CCNode* makeSquarePauseIcon() {
-        auto* sq = CCScale9Sprite::create("GJ_button_02.png");
-        sq->setContentSize({ 36.0f, 36.0f });
-        auto* lbl = CCLabelBMFont::create("FC", "bigFont.fnt");
-        lbl->setScale(0.50f);
-        lbl->setPosition({ 18.0f, 18.5f });
-        sq->addChild(lbl, 1);
-        return sq;
-    }
+        auto* sq = CCScale9Sprite::create("GJ_button_05.png");
+        sq->setContentSize({ 34.0f, 34.0f });
 
-    CCNode* makeRecPauseIcon(bool isRec) {
-        auto* sq = CCScale9Sprite::create(isRec ? "GJ_button_06.png" : "GJ_button_04.png");
-        sq->setContentSize({ 36.0f, 22.0f });
-        auto* lbl = CCLabelBMFont::create(isRec ? "STOP" : "REC", "bigFont.fnt");
-        lbl->setScale(0.32f);
-        lbl->setColor(isRec ? ccc3(255, 255, 255) : ccc3(255, 110, 110));
-        lbl->setPosition({ 18.0f, 11.5f });
-        sq->addChild(lbl, 1);
+        auto iconPath = (Mod::get()->getResourcesDir() / "fwc_icon.png").string();
+        if (auto* icon = CCSprite::create(iconPath.c_str())) {
+            float maxDim = std::max(icon->getContentSize().width, icon->getContentSize().height);
+            if (maxDim > 1.0f) icon->setScale(22.0f / maxDim);
+            icon->setPosition({ 17.0f, 17.0f });
+            sq->addChild(icon, 1);
+        } else {
+            auto* lbl = CCLabelBMFont::create("FC", "bigFont.fnt");
+            lbl->setScale(0.45f);
+            lbl->setPosition({ 17.0f, 17.5f });
+            sq->addChild(lbl, 1);
+        }
         return sq;
     }
 
     void customSetup() {
         PauseLayer::customSetup();
 
-        bool recNow = false;
         if (auto* pl = PlayLayer::get()) {
             auto* fwcPl = static_cast<FWCPlayLayer*>(pl);
             if (fwcPl->isScanning()) fwcPl->finishOrCancelScan(false);
             if (fwcPl->isWatchingMacro()) fwcPl->stopWatchMacro();
             if (fwcPl->isRendering()) fwcPl->stopInternalRender(true);
-            recNow = fwcPl->isRecordingMacro();
         }
 
         Ref<PauseLayer> selfRef = this;
-        Loader::get()->queueInMainThread([selfRef, recNow]() {
+        Loader::get()->queueInMainThread([selfRef]() {
             auto* self = static_cast<FWCPauseLayer*>(selfRef.data());
             if (!self || !self->getParent()) return;
 
@@ -2232,33 +2217,22 @@ class $modify(FWCPauseLayer, PauseLayer) {
             );
             btn->setID("fwc-settings-button"_spr);
 
-            auto* recBtn = CCMenuItemSpriteExtra::create(
-                self->makeRecPauseIcon(recNow),
-                self,
-                menu_selector(FWCPauseLayer::onQuickRecToggle)
-            );
-            recBtn->setID("fwc-rec-button"_spr);
-
-            if (auto* rightMenu = self->getChildByID("right-button-menu")) {
-                rightMenu->addChild(btn);
-                rightMenu->addChild(recBtn);
-                rightMenu->updateLayout();
-                return;
-            }
             if (auto* leftMenu = self->getChildByID("left-button-menu")) {
                 leftMenu->addChild(btn);
-                leftMenu->addChild(recBtn);
                 leftMenu->updateLayout();
+                return;
+            }
+            if (auto* rightMenu = self->getChildByID("right-button-menu")) {
+                rightMenu->addChild(btn);
+                rightMenu->updateLayout();
                 return;
             }
 
             auto winSize = CCDirector::sharedDirector()->getWinSize();
             auto* menu = CCMenu::create();
             menu->setPosition({ 0.0f, 0.0f });
-            btn->setPosition({ winSize.width - 34.0f, winSize.height - 96.0f });
-            recBtn->setPosition({ winSize.width - 34.0f, winSize.height - 130.0f });
+            btn->setPosition({ 34.0f, winSize.height - 96.0f });
             menu->addChild(btn);
-            menu->addChild(recBtn);
             self->addChild(menu, 50);
         });
     }

@@ -294,30 +294,47 @@ inline bool parseSilicateV3(std::vector<uint8_t> const& buf, LoadedMacro& out) {
                 out.inputs.reserve(static_cast<size_t>(actionCount));
                 uint64_t curFrame = 0;
                 uint64_t decoded = 0;
+                auto emitSlcVal = [&](uint64_t val) {
+                    decoded++;
+                    uint64_t delta = val >> 4;
+                    curFrame += delta;
+                    uint8_t low4 = static_cast<uint8_t>(val & 0xFu);
+                    int btn = static_cast<int>((low4 >> 2) & 3u);
+                    bool isP1 = ((low4 >> 1) & 1u) != 0;
+                    bool down = (low4 & 1u) != 0;
+                    if (btn == 1) {
+                        if (curFrame == 0 && !down) return;
+                        out.inputs.push_back({ scaleFrameTo240(curFrame, tps), down, 1, isP1 });
+                    }
+                };
                 while (aPos + 2 <= atomEnd && decoded < actionCount) {
                     uint8_t mode = buf[aPos++];
                     uint8_t tag = buf[aPos++];
-                    if (mode != 0x00u) break;
                     size_t width = static_cast<size_t>((tag >> 4) & 0xFu) + 1;
                     size_t runCount = static_cast<size_t>(1u) << (tag & 0xFu);
                     if (width > 8) break;
-                    for (size_t r = 0; r < runCount && decoded < actionCount; ++r) {
+                    if (mode == 0x00u) {
+                        // Literal run: runCount distinct values of `width` bytes
+                        for (size_t r = 0; r < runCount && decoded < actionCount; ++r) {
+                            if (aPos + width > atomEnd) break;
+                            uint64_t val = 0;
+                            for (size_t b = 0; b < width; ++b) {
+                                val |= static_cast<uint64_t>(buf[aPos++]) << (b * 8);
+                            }
+                            emitSlcVal(val);
+                        }
+                    } else if (mode == 0x01u) {
+                        // RLE repeat run: 1 value of `width` bytes repeated runCount times
                         if (aPos + width > atomEnd) break;
                         uint64_t val = 0;
                         for (size_t b = 0; b < width; ++b) {
                             val |= static_cast<uint64_t>(buf[aPos++]) << (b * 8);
                         }
-                        decoded++;
-                        uint64_t delta = val >> 4;
-                        curFrame += delta;
-                        uint8_t low4 = static_cast<uint8_t>(val & 0xFu);
-                        int btn = static_cast<int>((low4 >> 2) & 3u);
-                        bool isP1 = ((low4 >> 1) & 1u) != 0;
-                        bool down = (low4 & 1u) != 0;
-                        if (btn == 1) {
-                            if (curFrame == 0 && !down) continue;
-                            out.inputs.push_back({ scaleFrameTo240(curFrame, tps), down, 1, isP1 });
+                        for (size_t r = 0; r < runCount && decoded < actionCount; ++r) {
+                            emitSlcVal(val);
                         }
+                    } else {
+                        break;
                     }
                 }
             }
@@ -740,24 +757,25 @@ public:
         auto ownCfg = geode::Mod::get()->getConfigDir();
         auto saveParent = ownSave.parent_path();
         auto cfgParent = ownCfg.parent_path();
+        auto persistentDir = geode::dirs::getModPersistentDir();
         auto gameDir = geode::dirs::getGameDir();
 
-        // 1. Silicate (by Peony — priority!)
-        for (auto const& root : { saveParent / "peony.silicate", cfgParent / "peony.silicate" }) {
+        // 1. Silicate (by Peony — AppData/Local/GeometryDash/geode_persistent/peony.silicate/replays!)
+        for (auto const& root : { persistentDir / "peony.silicate", saveParent / "peony.silicate", cfgParent / "peony.silicate" }) {
             dirs.push_back({ root / "replays", "SLC", "Silicate" });
             dirs.push_back({ root / "macros", "SLC", "Silicate" });
             dirs.push_back({ root, "SLC", "Silicate" });
         }
 
         // 2. xdBot (by Zilko)
-        for (auto const& root : { saveParent / "zilko.xdbot", cfgParent / "zilko.xdbot" }) {
+        for (auto const& root : { persistentDir / "zilko.xdbot", saveParent / "zilko.xdbot", cfgParent / "zilko.xdbot" }) {
             dirs.push_back({ root / "macros", "XDB", "xdBot" });
             dirs.push_back({ root / "replays", "XDB", "xdBot" });
             dirs.push_back({ root, "XDB", "xdBot" });
         }
 
         // 3. Eclipse Menu Bot
-        for (auto const& root : { saveParent / "eclipse.eclipse-menu", cfgParent / "eclipse.eclipse-menu" }) {
+        for (auto const& root : { persistentDir / "eclipse.eclipse-menu", saveParent / "eclipse.eclipse-menu", cfgParent / "eclipse.eclipse-menu" }) {
             dirs.push_back({ root / "replays", "ECL", "Eclipse" });
             dirs.push_back({ root / "macros", "ECL", "Eclipse" });
             dirs.push_back({ root / "bot", "ECL", "Eclipse" });

@@ -8,9 +8,9 @@
     },
     "id": "z0pzk.frame-window-counter",
     "name": "Frame Window Counter",
-    "version": "v12.0.0",
+    "version": "v12.1.0",
     "developer": "z0pzk",
-    "description": "Frame & CBF Window Counter v12.0 (Windows + Android64) — FB-style 4-tab UI, exact 240Hz tick sync (m_currentProgress), <=12 frame cap, built-in REC button on Pause menu, Silicate/xdBot/Eclipse macro support.",
+    "description": "Frame & CBF Window Counter v12.1 (Windows + Android64) — Exact m_levelTime 240Hz tick sync, Silicate geode_persistent/peony.silicate/replays auto-discovery, full SLC3 RLE support, <=12 frame cap.",
     "resources": {
         "files": [
             "resources/*.wav",
