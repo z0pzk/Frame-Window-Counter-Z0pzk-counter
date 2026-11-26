@@ -38,6 +38,7 @@ struct RecordedClick {
     float origX = 0.0f;
     float y = 30.0f;
     uint64_t tick240 = 0;
+    uint64_t origTick240 = 0;
     bool hasExactTick = false;
     bool down = true;
     bool isP1 = true;
@@ -288,6 +289,13 @@ class $modify(FWCPlayLayer, PlayLayer) {
         uint64_t watchSimTick = 0;
         size_t watchNextInputIdx = 0;
         double watchAccumulator = 0.0;
+        bool isRecordingMacro = false;
+        uint64_t recSimTick = 0;
+        double recAccum = 0.0;
+        size_t recLastCpCount = 0;
+        std::vector<fwc::MacroInput> recInputs;
+        std::vector<std::pair<float, uint64_t>> recCpStack;
+        bool clickPoppedCpOnce = false;
         bool scanProbeDied = false;
         bool wasPracticeBeforeScan = false;
         bool wasAutoCpBeforeScan = false;
@@ -337,6 +345,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
     bool isScanning() { return m_fields->isScanning; }
     bool isRendering() { return m_fields->isRendering; }
     bool isWatchingMacro() { return m_fields->isWatchingMacro; }
+    bool isRecordingMacro() { return m_fields->isRecordingMacro; }
     std::string getLevelNameSafe() { return m_fields->levelName; }
 
     bool isIntroFreezing() {
@@ -625,7 +634,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
         bool relMatters = player->m_isDart || player->m_isShip || player->m_isRobot || player->m_isSwing;
         if (f.currentRun.size() < 3000) {
-            f.currentRun.push_back({ pos.x, pos.x, pos.y, 0, false, down, isPlayer1, relMatters, player->m_isDart });
+            f.currentRun.push_back({ pos.x, pos.x, pos.y, 0, 0, false, down, isPlayer1, relMatters, player->m_isDart });
             if (f.currentRun.size() >= f.savedRun.size()) {
                 f.savedRun = f.currentRun;
             }
@@ -919,6 +928,104 @@ class $modify(FWCPlayLayer, PlayLayer) {
         if (f.overlay) f.overlay->setStatusBanner(false, "", "");
     }
 
+    void stopAndSaveRecordedMacro(bool showPopup) {
+        auto& f = *m_fields.self();
+        if (!f.isRecordingMacro) return;
+        f.isRecordingMacro = false;
+        if (f.overlay) f.overlay->setStatusBanner(false, "", "");
+
+        if (f.recInputs.empty()) {
+            if (showPopup) {
+                FLAlertLayer::create("Macro Recorder", "No clicks were recorded.", "OK")->show();
+            }
+            return;
+        }
+        std::string savedPath = fwc::MacroStore::get().saveRecordedMacro(f.levelName, f.recInputs, 240.0);
+        size_t clicks = fwc::MacroStore::get().active().clickCount();
+        if (showPopup) {
+            if (!savedPath.empty()) {
+                FLAlertLayer::create(
+                    "Macro Saved!",
+                    fmt::format("Saved <cg>{}</c> clicks (@ 240 FPS) and loaded as Active Macro!
+<cy>{}</c>", clicks, savedPath).c_str(),
+                    "OK"
+                )->show();
+            } else {
+                FLAlertLayer::create("Macro Save Failed", fwc::MacroStore::get().lastError().c_str(), "OK")->show();
+            }
+        }
+    }
+
+    void toggleRecordMacro() {
+        auto& f = *m_fields.self();
+        if (f.isRecordingMacro) {
+            stopAndSaveRecordedMacro(true);
+            return;
+        }
+        if (f.isScanning) finishOrCancelScan(false);
+        if (f.isWatchingMacro) stopWatchMacro();
+        if (f.isRecordingMacro) stopAndSaveRecordedMacro(false);
+        f.cfg = fwc::ModConfig::load();
+        if (f.isRendering) stopInternalRender(false);
+
+        f.isRecordingMacro = true;
+        f.recSimTick = 0;
+        f.recAccum = 0.0;
+        f.recInputs.clear();
+        f.recCpStack.clear();
+        f.recLastCpCount = 0;
+        safeRemoveAllCheckpoints(this);
+        safeResetFromStart(this);
+        if (f.overlay) {
+            f.overlay->setStatusBanner(true, "REC MACRO: 0 CLICKS", "Play normally (Practice OK)  |  Pause -> STOP REC to save");
+        }
+    }
+
+    void recordMacroInput(bool down, int btn, bool isP1) {
+        auto& f = *m_fields.self();
+        if (!f.isRecordingMacro || btn != 1 || f.isDeadThisAttempt) return;
+        if (m_player1 && m_player1->m_isDead) return;
+        f.recInputs.push_back({ f.recSimTick, down, 1, isP1 });
+    }
+
+    void stepMacroRecorderTick(float dt) {
+        auto& f = *m_fields.self();
+        if (!f.isRecordingMacro) return;
+        if (m_player1 && m_player1->m_isDead) return;
+
+        constexpr double kStep = 1.0 / 240.0;
+        f.recAccum += std::clamp(static_cast<double>(dt), 0.0, 0.05);
+        uint64_t ticks = 0;
+        while (f.recAccum >= kStep) {
+            f.recAccum -= kStep;
+            ticks++;
+        }
+        if (ticks == 0 && dt > 1e-6f) ticks = 1;
+        f.recSimTick += ticks;
+
+        size_t cpCnt = safeCheckpointCount(this);
+        if (cpCnt > f.recLastCpCount && m_player1) {
+            f.recCpStack.push_back({ m_player1->getPositionX(), f.recSimTick });
+        } else if (cpCnt < f.recLastCpCount) {
+            while (f.recCpStack.size() > cpCnt) f.recCpStack.pop_back();
+        }
+        f.recLastCpCount = cpCnt;
+
+        if (f.overlay && (f.recSimTick % 24 == 0)) {
+            size_t c = 0;
+            for (auto const& in : f.recInputs) if (in.down) c++;
+            f.overlay->setStatusBanner(
+                true,
+                fmt::format("REC MACRO: {} CLICKS ({:.1f}s)", c, static_cast<double>(f.recSimTick) / 240.0),
+                "Play normally (Practice OK)  |  Pause -> STOP REC to save"
+            );
+        }
+
+        if (safeHasCompleted(this)) {
+            stopAndSaveRecordedMacro(true);
+        }
+    }
+
     void stepWatchMacro(
         float dt,
         std::function<void(float)> const& runBaseUpdate,
@@ -986,13 +1093,21 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 f.cpHoldingP2 = false;
                 std::fill(f.replayFired.begin(), f.replayFired.end(), false);
             } else {
+                bool p1AlreadyHold = isPlayerHoldingJump(m_player1);
+                bool p2AlreadyHold = isPlayerHoldingJump(m_player2);
                 if (f.cpHoldingP1) {
                     f.simHoldingP1 = true;
-                    runBaseBtn(true, 1, true);
+                    if (!p1AlreadyHold) runBaseBtn(true, 1, true);
+                } else if (p1AlreadyHold) {
+                    f.simHoldingP1 = false;
+                    runBaseBtn(false, 1, true);
                 }
                 if (f.cpHoldingP2) {
                     f.simHoldingP2 = true;
-                    runBaseBtn(true, 1, false);
+                    if (!p2AlreadyHold) runBaseBtn(true, 1, false);
+                } else if (p2AlreadyHold) {
+                    f.simHoldingP2 = false;
+                    runBaseBtn(false, 1, false);
                 }
             }
         } else {
@@ -1023,6 +1138,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
             for (auto const& in : mac.inputs) {
                 RecordedClick rc;
                 rc.tick240 = in.tick240;
+                rc.origTick240 = in.tick240;
                 rc.hasExactTick = true;
                 rc.down = in.down;
                 rc.isP1 = in.isP1;
@@ -1063,6 +1179,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         f.approachRetryStep = 0;
         f.approachFromStartTried = false;
         f.probesForCurrentClick = 0;
+        f.clickPoppedCpOnce = false;
         f.totalSolved = 0;
         f.diagSkip = 0;
         f.diagFail = 0;
@@ -1154,9 +1271,10 @@ class $modify(FWCPlayLayer, PlayLayer) {
         if (!f.isScanning) return;
 
         constexpr float kFixedDt = 1.0f / 240.0f;
-        constexpr int kMaxShift = 24;
-        constexpr int kMaxProbesPerClick = 140;
+        int kMaxShift = (f.cfg.analyzeDepth == "fast") ? 6 : 12;
+        constexpr int kMaxProbesPerClick = 80;
         static constexpr int kAnchorOffsets[14] = { 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 8, -8 };
+        static constexpr int kApproachNudgeTick[6] = { 1, -1, 2, -2, 3, -3 };
         static constexpr float kApproachNudgeX[10] = { 1.3f, -1.3f, 2.6f, -2.6f, 4.0f, -4.0f, 5.5f, -5.5f, 7.5f, -7.5f };
 
         auto tStart = std::chrono::steady_clock::now();
@@ -1180,6 +1298,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
             f.approachNudgeTarget = 0;
             f.approachFromStartTried = false;
             f.probesForCurrentClick = 0;
+            f.clickPoppedCpOnce = false;
             f.scanPhase = ScanPhase::ApproachCheckpoint;
             updateAnalyzeOverlayUI();
         };
@@ -1238,16 +1357,32 @@ class $modify(FWCPlayLayer, PlayLayer) {
             size_t i = f.scanClickIdx;
             float curX = m_player1 ? m_player1->getPositionX() : 0.0f;
             bool targetIsWave = f.scanClicks[i].isWave;
-            int maxLookahead = targetIsWave ? 56 : 112;
-            int minCheckTicks = targetIsWave ? 10 : 18;
+            bool targetIsShip = m_player1 && (m_player1->m_isShip || m_player1->m_isSwing);
+            bool targetIsHoldMode = targetIsWave || targetIsShip;
+            int maxLookahead = targetIsHoldMode ? 52 : 104;
+            int minCheckTicks = targetIsHoldMode ? 8 : 16;
             int kLookaheadTicks = maxLookahead;
+            int maxLateForClick = kMaxShift;
             float nextClickStopX = 1e9f;
             if (f.scanByTick) {
+                if (f.scanClicks[i].down) {
+                    for (size_t rel = i + 1; rel < f.scanClicks.size(); ++rel) {
+                        if (f.scanClicks[rel].isP1 == f.scanClicks[i].isP1) {
+                            if (!f.scanClicks[rel].down && f.scanClicks[rel].tick240 > f.scanClicks[i].tick240) {
+                                int holdLen = static_cast<int>(f.scanClicks[rel].tick240 - f.scanClicks[i].tick240);
+                                if (targetIsHoldMode && holdLen >= 2) {
+                                    maxLateForClick = std::min(kMaxShift, holdLen - 1);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
                 for (size_t nxt = i + 1; nxt < f.scanClicks.size(); ++nxt) {
                     if ((f.scanClicks[nxt].down || f.scanClicks[nxt].releaseMatters) &&
                         f.scanClicks[nxt].tick240 > f.scanClicks[i].tick240 + 4) {
                         int dtNext = static_cast<int>(f.scanClicks[nxt].tick240 - f.scanClicks[i].tick240);
-                        kLookaheadTicks = std::clamp(dtNext + 18, minCheckTicks, maxLookahead);
+                        kLookaheadTicks = std::clamp(dtNext + (targetIsHoldMode ? 4 : 10), minCheckTicks, maxLookahead);
                         break;
                     }
                 }
@@ -1255,7 +1390,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 for (size_t nxt = i + 1; nxt < f.scanClicks.size(); ++nxt) {
                     if ((f.scanClicks[nxt].down || f.scanClicks[nxt].releaseMatters) &&
                         f.scanClicks[nxt].x > f.scanClicks[i].x + 16.0f) {
-                        nextClickStopX = f.scanClicks[nxt].x + (targetIsWave ? 2.0f : 6.0f);
+                        nextClickStopX = f.scanClicks[nxt].x + (targetIsHoldMode ? 2.0f : 6.0f);
                         break;
                     }
                 }
@@ -1281,14 +1416,14 @@ class $modify(FWCPlayLayer, PlayLayer) {
             };
 
             if (f.scanPhase == ScanPhase::ApproachCheckpoint) {
-                bool nearStart = f.scanByTick ? (f.scanClicks[i].tick240 < 150) : (f.scanClicks[i].x < 220.0f);
+                bool nearStart = f.scanByTick ? (f.scanClicks[i].tick240 < 240) : (f.scanClicks[i].x < 260.0f);
                 if (nearStart) {
                     f.hasActiveCp = false;
                     f.cpStack.clear();
                     f.cpStartIdx = 0;
                     f.cpHoldingP1 = false;
                     f.cpHoldingP2 = false;
-                    f.maxApproachTicks = 420;
+                    f.maxApproachTicks = 480;
                     f.approachRetryStep = 0;
                     f.approachNudgeTarget = 0;
                     f.scanPhase = ScanPhase::MeasureBaseline;
@@ -1303,15 +1438,15 @@ class $modify(FWCPlayLayer, PlayLayer) {
                     bool canReuse = false;
                     if (f.scanByTick) {
                         uint64_t cpT = f.cpStack.back().simTick;
-                        if (f.scanClicks[i].tick240 >= cpT + 36 && f.scanClicks[i].tick240 <= cpT + 180) {
+                        if (f.scanClicks[i].tick240 >= cpT + 36 && f.scanClicks[i].tick240 <= cpT + 340) {
                             canReuse = true;
                         }
                     } else {
                         float cpDist = f.scanClicks[i].x - f.cpStack.back().worldX;
-                        if (cpDist >= 45.0f && cpDist <= 240.0f) canReuse = true;
+                        if (cpDist >= 45.0f && cpDist <= 340.0f) canReuse = true;
                     }
                     if (canReuse) {
-                        f.maxApproachTicks = 420;
+                        f.maxApproachTicks = 480;
                         f.approachRetryStep = 0;
                         f.approachNudgeTarget = 0;
                         f.scanPhase = ScanPhase::MeasureBaseline;
@@ -1323,9 +1458,11 @@ class $modify(FWCPlayLayer, PlayLayer) {
                     }
                 }
 
+                // Place checkpoint ~1 second (216 ticks) before target click, preferring non-holding frames for ship stability
                 bool reachedCp = f.scanByTick
-                    ? (f.scanSimTick + 72 >= f.scanClicks[i].tick240)
-                    : (curX >= std::max(0.0f, f.scanClicks[i].x - 105.0f));
+                    ? ((f.scanSimTick + 216 >= f.scanClicks[i].tick240 && !f.simHoldingP1 && !f.simHoldingP2) ||
+                       (f.scanSimTick + 144 >= f.scanClicks[i].tick240))
+                    : (curX >= std::max(0.0f, f.scanClicks[i].x - 240.0f));
                 if (reachedCp) {
                     bool stored = safeCreateAndStoreCheckpoint(this);
                     if (stored) {
@@ -1368,31 +1505,44 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
                 if (didDie()) {
                     bool retried = false;
-                    if (f.approachNudgeTarget == 0) {
-                        if (f.lastMeaningfulFiredIdx >= 0 && f.lastMeaningfulFiredIdx < static_cast<int>(i) && f.approachRetryStep < 10) {
+                    if (f.scanByTick) {
+                        if (f.lastMeaningfulFiredIdx >= 0 && f.lastMeaningfulFiredIdx < static_cast<int>(i) && f.approachRetryStep < 6) {
                             auto& prevC = f.scanClicks[static_cast<size_t>(f.lastMeaningfulFiredIdx)];
-                            prevC.x = std::max(0.0f, prevC.origX + kApproachNudgeX[f.approachRetryStep]);
+                            int64_t nt = static_cast<int64_t>(prevC.origTick240) + kApproachNudgeTick[f.approachRetryStep];
+                            prevC.tick240 = static_cast<uint64_t>(std::max<int64_t>(0, nt));
                             f.approachRetryStep++;
                             retried = true;
-                        } else {
-                            if (f.lastMeaningfulFiredIdx >= 0 && f.lastMeaningfulFiredIdx < static_cast<int>(i)) {
-                                auto& prevC = f.scanClicks[static_cast<size_t>(f.lastMeaningfulFiredIdx)];
-                                prevC.x = prevC.origX;
-                            }
-                            f.approachNudgeTarget = 1;
-                            f.approachRetryStep = 0;
+                        } else if (f.lastMeaningfulFiredIdx >= 0 && f.lastMeaningfulFiredIdx < static_cast<int>(i)) {
+                            auto& prevC = f.scanClicks[static_cast<size_t>(f.lastMeaningfulFiredIdx)];
+                            prevC.tick240 = prevC.origTick240;
                         }
-                    }
+                    } else {
+                        if (f.approachNudgeTarget == 0) {
+                            if (f.lastMeaningfulFiredIdx >= 0 && f.lastMeaningfulFiredIdx < static_cast<int>(i) && f.approachRetryStep < 10) {
+                                auto& prevC = f.scanClicks[static_cast<size_t>(f.lastMeaningfulFiredIdx)];
+                                prevC.x = std::max(0.0f, prevC.origX + kApproachNudgeX[f.approachRetryStep]);
+                                f.approachRetryStep++;
+                                retried = true;
+                            } else {
+                                if (f.lastMeaningfulFiredIdx >= 0 && f.lastMeaningfulFiredIdx < static_cast<int>(i)) {
+                                    auto& prevC = f.scanClicks[static_cast<size_t>(f.lastMeaningfulFiredIdx)];
+                                    prevC.x = prevC.origX;
+                                }
+                                f.approachNudgeTarget = 1;
+                                f.approachRetryStep = 0;
+                            }
+                        }
 
-                    if (!retried && f.approachNudgeTarget == 1) {
-                        if (f.prevMeaningfulFiredIdx >= 0 && f.prevMeaningfulFiredIdx < static_cast<int>(i) && f.approachRetryStep < 6) {
-                            auto& prev2 = f.scanClicks[static_cast<size_t>(f.prevMeaningfulFiredIdx)];
-                            prev2.x = std::max(0.0f, prev2.origX + kApproachNudgeX[f.approachRetryStep]);
-                            f.approachRetryStep++;
-                            retried = true;
-                        } else if (f.prevMeaningfulFiredIdx >= 0 && f.prevMeaningfulFiredIdx < static_cast<int>(i)) {
-                            auto& prev2 = f.scanClicks[static_cast<size_t>(f.prevMeaningfulFiredIdx)];
-                            prev2.x = prev2.origX;
+                        if (!retried && f.approachNudgeTarget == 1) {
+                            if (f.prevMeaningfulFiredIdx >= 0 && f.prevMeaningfulFiredIdx < static_cast<int>(i) && f.approachRetryStep < 6) {
+                                auto& prev2 = f.scanClicks[static_cast<size_t>(f.prevMeaningfulFiredIdx)];
+                                prev2.x = std::max(0.0f, prev2.origX + kApproachNudgeX[f.approachRetryStep]);
+                                f.approachRetryStep++;
+                                retried = true;
+                            } else if (f.prevMeaningfulFiredIdx >= 0 && f.prevMeaningfulFiredIdx < static_cast<int>(i)) {
+                                auto& prev2 = f.scanClicks[static_cast<size_t>(f.prevMeaningfulFiredIdx)];
+                                prev2.x = prev2.origX;
+                            }
                         }
                     }
 
@@ -1401,15 +1551,19 @@ class $modify(FWCPlayLayer, PlayLayer) {
                         continue;
                     }
 
-                    if (popCheckpointFallback()) {
+                    if (!f.clickPoppedCpOnce && popCheckpointFallback()) {
+                        f.clickPoppedCpOnce = true;
                         f.approachNudgeTarget = 0;
                         f.approachRetryStep = 0;
                         resetProbeState(runBaseBtn);
                         continue;
                     }
 
-                    finishOrCancelScan(true);
-                    return;
+                    // Do not hang or wipe back to 0%: skip this click and continue scanning
+                    f.diagFail++;
+                    advanceScanToNextClick();
+                    resetProbeState(runBaseBtn);
+                    continue;
                 }
                 f.probeTick++;
             }
@@ -1441,7 +1595,8 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 bool failedBeforeTarget = !f.targetFiredThisProbe && (didDie() || f.probeTick > f.maxApproachTicks);
 
                 if (failedBeforeTarget) {
-                    if (popCheckpointFallback()) {
+                    if (!f.clickPoppedCpOnce && popCheckpointFallback()) {
+                        f.clickPoppedCpOnce = true;
                         f.approachNudgeTarget = 0;
                         f.approachRetryStep = 0;
                         f.scanPhase = ScanPhase::ApproachCheckpoint;
@@ -1473,8 +1628,9 @@ class $modify(FWCPlayLayer, PlayLayer) {
             }
             else if (f.scanPhase == ScanPhase::FindAnchor) {
                 if (f.anchorSearchIdx >= 14) {
-                    // Baseline AND all 14 anchor offsets died: never emit a fake 1.00!
-                    if (popCheckpointFallback()) {
+                    // Baseline AND all 14 anchor offsets died: never emit a fake 1.00 or loop to 0%!
+                    if (!f.clickPoppedCpOnce && popCheckpointFallback()) {
+                        f.clickPoppedCpOnce = true;
                         f.approachNudgeTarget = 0;
                         f.approachRetryStep = 0;
                         f.scanPhase = ScanPhase::ApproachCheckpoint;
@@ -1551,11 +1707,16 @@ class $modify(FWCPlayLayer, PlayLayer) {
                     } else {
                         f.safeLate = 0;
                         f.safeEarly = 0;
-                        f.currentDelta = 1;
                         f.binSearching = false;
                         f.binLo = 0;
                         f.binHi = 0;
-                        f.scanPhase = ScanPhase::TestLate;
+                        if (maxLateForClick <= 0) {
+                            f.currentDelta = -1;
+                            f.scanPhase = ScanPhase::TestEarly;
+                        } else {
+                            f.currentDelta = 1;
+                            f.scanPhase = ScanPhase::TestLate;
+                        }
                         resetProbeState(runBaseBtn);
                     }
                 }
@@ -1592,10 +1753,10 @@ class $modify(FWCPlayLayer, PlayLayer) {
                             if (survived) {
                                 f.binLo = d;
                                 f.safeLate = d;
-                                if (d >= kMaxShift) {
+                                if (d >= maxLateForClick) {
                                     doneLate = true;
                                 } else {
-                                    f.currentDelta = std::min(kMaxShift, d * 2);
+                                    f.currentDelta = std::min(maxLateForClick, d * 2);
                                 }
                             } else {
                                 f.binHi = d;
@@ -1767,6 +1928,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
     void onQuit() {
         if (m_fields->isScanning) finishOrCancelScan(false);
         if (m_fields->isWatchingMacro) stopWatchMacro();
+        if (m_fields->isRecordingMacro) stopAndSaveRecordedMacro(false);
         if (m_fields->isRendering) stopInternalRender(false);
         PlayLayer::onQuit();
     }
@@ -1812,11 +1974,34 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
     void resetLevel() {
         PlayLayer::resetLevel();
-        if (m_fields->isScanning) {
-            m_fields->scanProbeDied = false;
+        auto& f = *m_fields.self();
+        if (f.isScanning) {
+            f.scanProbeDied = false;
             return;
         }
-        performNormalReset(m_fields->isRendering);
+        if (f.isRecordingMacro) {
+            float rx = m_player1 ? m_player1->getPositionX() : 0.0f;
+            if (rx < 40.0f || f.recCpStack.empty()) {
+                f.recInputs.clear();
+                f.recCpStack.clear();
+                f.recSimTick = 0;
+                f.recAccum = 0.0;
+                f.recLastCpCount = 0;
+            } else {
+                uint64_t bestTick = f.recCpStack.back().second;
+                float bestDiff = 1e9f;
+                for (auto const& cp : f.recCpStack) {
+                    float d = std::fabs(cp.first - rx);
+                    if (d < bestDiff) { bestDiff = d; bestTick = cp.second; }
+                }
+                while (!f.recInputs.empty() && f.recInputs.back().tick240 > bestTick) {
+                    f.recInputs.pop_back();
+                }
+                f.recSimTick = bestTick;
+                f.recAccum = 0.0;
+            }
+        }
+        performNormalReset(f.isRendering);
     }
 
     void postUpdate(float dt) {
@@ -1868,6 +2053,7 @@ class $modify(FWCGJBaseGameLayer, GJBaseGameLayer) {
             fwcPl->capturePreStepSnapshot();
             GJBaseGameLayer::update(dt);
             fwcPl->runFramePostStep(dt);
+            fwcPl->stepMacroRecorderTick(dt);
             fwcPl->bumpUpdateTick();
             return;
         }
@@ -1881,6 +2067,7 @@ class $modify(FWCGJBaseGameLayer, GJBaseGameLayer) {
                 return;
             }
             if (button == 1) {
+                fwcPl->recordMacroInput(down, button, isPlayer1);
                 PlayerObject* p = isPlayer1 ? pl->m_player1 : pl->m_player2;
                 fwcPl->handleResolvedClick(p, down, isPlayer1, true);
             }
@@ -1897,12 +2084,14 @@ class $modify(FWCPauseLayer, PauseLayer) {
         std::string lvlName;
         size_t recCount = 0;
         bool renderingNow = false;
+        bool recordingNow = false;
         if (pl) {
             auto* fwcPl = static_cast<FWCPlayLayer*>(pl);
             pos = fwcPl->getCurrentPlayerPosSafe();
             lvlName = fwcPl->getLevelNameSafe();
             recCount = fwcPl->getRecordedClickCount();
             renderingNow = fwcPl->isRendering();
+            recordingNow = fwcPl->isRecordingMacro();
         }
 
         Ref<PauseLayer> pauseRef = this;
@@ -1931,6 +2120,16 @@ class $modify(FWCPauseLayer, PauseLayer) {
             [pauseRef]() {
                 if (auto* activePl = PlayLayer::get()) {
                     auto* fwcPl = static_cast<FWCPlayLayer*>(activePl);
+                    bool wasRec = fwcPl->isRecordingMacro();
+                    fwcPl->toggleRecordMacro();
+                    if (!wasRec && fwcPl->isRecordingMacro() && pauseRef && pauseRef->getParent()) {
+                        pauseRef->onResume(nullptr);
+                    }
+                }
+            },
+            [pauseRef]() {
+                if (auto* activePl = PlayLayer::get()) {
+                    auto* fwcPl = static_cast<FWCPlayLayer*>(activePl);
                     bool wasRendering = fwcPl->isRendering();
                     fwcPl->toggleInternalRender();
                     if (!wasRendering && fwcPl->isRendering() && pauseRef && pauseRef->getParent()) {
@@ -1941,6 +2140,7 @@ class $modify(FWCPauseLayer, PauseLayer) {
             lvlName,
             recCount,
             renderingNow,
+            recordingNow,
             pos.x,
             pos.y
         );

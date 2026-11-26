@@ -635,6 +635,61 @@ public:
         return true;
     }
 
+    bool savePlaintextToPath(std::filesystem::path const& path, std::vector<MacroInput> const& inputs, double fps = 240.0, std::string const& displayName = "") {
+        m_lastError.clear();
+        if (inputs.empty()) {
+            m_lastError = "No inputs recorded";
+            return false;
+        }
+        std::error_code ec;
+        if (path.has_parent_path()) {
+            std::filesystem::create_directories(path.parent_path(), ec);
+        }
+        std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+        if (!ofs) {
+            m_lastError = "Cannot write macro file";
+            return false;
+        }
+        ofs << static_cast<int>(std::llround(fps)) << "\n";
+        for (auto const& in : inputs) {
+            ofs << in.tick240 << " " << (in.down ? 1 : 0) << " " << (in.isP1 ? 0 : 1) << " " << in.button << "\n";
+        }
+        ofs.flush();
+        if (!ofs.good()) {
+            m_lastError = "Write failed";
+            return false;
+        }
+        LoadedMacro lm;
+        lm.name = displayName.empty() ? path.filename().string() : displayName;
+        lm.sourceBot = "FWC Rec";
+        lm.path = path.string();
+        lm.sourceFps = fps;
+        lm.inputs = inputs;
+        std::stable_sort(lm.inputs.begin(), lm.inputs.end(), [](MacroInput const& a, MacroInput const& b) {
+            return a.tick240 < b.tick240;
+        });
+        m_active = std::move(lm);
+        return true;
+    }
+
+#if FWC_HAS_GEODE
+    std::string saveRecordedMacro(std::string const& levelName, std::vector<MacroInput> const& inputs, double fps = 240.0) {
+        std::string safeName;
+        for (char c : levelName) {
+            if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == ' ') {
+                safeName.push_back(c);
+            }
+        }
+        if (safeName.empty()) safeName = "Level";
+        std::string fname = safeName + "_fwc.txt";
+        auto outPath = getOwnMacrosDir() / fname;
+        if (!savePlaintextToPath(outPath, inputs, fps, fname)) {
+            return "";
+        }
+        return outPath.string();
+    }
+#endif
+
     bool loadFromFile(std::filesystem::path const& path, std::string const& hintBot = "") {
         std::error_code ec;
         if (!std::filesystem::exists(path, ec)) {

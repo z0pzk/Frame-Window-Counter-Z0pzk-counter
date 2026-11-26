@@ -77,6 +77,7 @@ struct ModConfig {
     bool dynamicPitch = true;
 
     bool captureToManual = false;
+    std::string analyzeDepth = "deep";
 
     int64_t renderFps = 60;
     std::string renderRes = "720p";
@@ -129,6 +130,8 @@ struct ModConfig {
         cfg.dynamicPitch = mod->getSettingValue<bool>("dynamic-pitch");
 
         cfg.captureToManual = mod->getSettingValue<bool>("capture-to-manual");
+        cfg.analyzeDepth = mod->getSettingValue<std::string>("analyze-depth");
+        if (cfg.analyzeDepth != "fast") cfg.analyzeDepth = "deep";
 
         cfg.renderFps = std::clamp<int64_t>(mod->getSettingValue<int64_t>("render-fps"), 24, 120);
         cfg.renderRes = mod->getSettingValue<std::string>("render-res");
@@ -182,6 +185,7 @@ struct ModConfig {
         mod->setSettingValue<bool>("dynamic-pitch", dynamicPitch);
 
         mod->setSettingValue<bool>("capture-to-manual", captureToManual);
+        mod->setSettingValue<std::string>("analyze-depth", analyzeDepth == "fast" ? "fast" : "deep");
 
         mod->setSettingValue<int64_t>("render-fps", std::clamp<int64_t>(renderFps, 24, 120));
         mod->setSettingValue<std::string>("render-res", renderRes);

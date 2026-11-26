@@ -23,12 +23,14 @@ private:
     std::function<void()> m_onChanged;
     std::function<void()> m_onStartExactScan;
     std::function<void()> m_onWatchMacro;
+    std::function<void()> m_onToggleRecordMacro;
     std::function<void()> m_onToggleRender;
     std::string m_levelName;
     std::vector<DiscoveredMacro> m_discoveredMacros;
     int m_macroPage = 0;
     size_t m_recordedRunClicks = 0;
     bool m_isRenderingNow = false;
+    bool m_isRecordingNow = false;
     float m_currentPlayerX = 0.0f;
     float m_currentPlayerY = 30.0f;
 
@@ -182,7 +184,7 @@ private:
         m_panel->addChild(m_contentNode, 5);
 
         auto* innerBg = CCScale9Sprite::create("square02_001.png");
-        innerBg->setOpacity(95);
+        innerBg->setOpacity(135);
         innerBg->setContentSize({ kPanelW - 26.0f, kPanelH - 78.0f });
         innerBg->setPosition({ kPanelW * 0.5f, 13.0f + (kPanelH - 78.0f) * 0.5f });
         m_contentNode->addChild(innerBg, 0);
@@ -198,28 +200,46 @@ private:
         float topY = kPanelH - 80.0f;
 
         if (m_activeTab == 0) {
-            addCheckboxRow(m_contentNode, menu, "Enable Mod", m_cfg.enabled, 100, leftX, topY);
+            addCheckboxRow(m_contentNode, menu, "Enable Mod", m_cfg.enabled, 100, leftX, topY + 2.0f);
+
+            bool isFastDepth = (m_cfg.analyzeDepth == "fast");
+            addLabel(m_contentNode, "Scan:", leftX + 124.0f, topY + 2.0f, 0.30f, "goldFont.fnt");
+            auto* fastBtn = CCMenuItemSpriteExtra::create(
+                makeMiniBtn("Fast +-6", 54.0f, 20.0f, isFastDepth ? "GJ_button_01.png" : "GJ_button_04.png"),
+                this, menu_selector(SettingsPopup::onAnalyzeDepthBtn)
+            );
+            fastBtn->setTag(0);
+            fastBtn->setPosition({ leftX + 188.0f, topY + 2.0f });
+            menu->addChild(fastBtn);
+
+            auto* deepBtn = CCMenuItemSpriteExtra::create(
+                makeMiniBtn("Deep +-12", 62.0f, 20.0f, !isFastDepth ? "GJ_button_01.png" : "GJ_button_04.png"),
+                this, menu_selector(SettingsPopup::onAnalyzeDepthBtn)
+            );
+            deepBtn->setTag(1);
+            deepBtn->setPosition({ leftX + 250.0f, topY + 2.0f });
+            menu->addChild(deepBtn);
 
             auto const& activeMac = MacroStore::get().active();
             bool hasMac = !activeMac.empty();
             size_t availClicks = hasMac ? activeMac.clickCount() : m_recordedRunClicks;
 
             std::string scanTxt = hasMac
-                ? fmt::format("ANALYZE MACRO ({})", availClicks)
+                ? fmt::format("ANALYZE ({})", availClicks)
                 : fmt::format("ANALYZE RUN ({})", availClicks);
             auto* scanBtn = CCMenuItemSpriteExtra::create(
-                makeMiniBtn(scanTxt.c_str(), 148.0f, 24.0f, availClicks > 0 ? "GJ_button_01.png" : "GJ_button_04.png"),
+                makeMiniBtn(scanTxt.c_str(), 100.0f, 22.0f, availClicks > 0 ? "GJ_button_01.png" : "GJ_button_04.png"),
                 this, menu_selector(SettingsPopup::onStartScanBtn)
             );
-            scanBtn->setPosition({ rightX + 74.0f, topY });
+            scanBtn->setPosition({ rightX + colW - 88.0f, topY + 2.0f });
             menu->addChild(scanBtn);
 
-            auto* watchBtn = CCMenuItemSpriteExtra::create(
-                makeMiniBtn("WATCH", 52.0f, 24.0f, hasMac ? "GJ_button_02.png" : "GJ_button_04.png"),
-                this, menu_selector(SettingsPopup::onWatchMacroBtn)
+            auto* recBtn = CCMenuItemSpriteExtra::create(
+                makeMiniBtn(m_isRecordingNow ? "STOP" : "REC", 42.0f, 22.0f, m_isRecordingNow ? "GJ_button_06.png" : "GJ_button_02.png"),
+                this, menu_selector(SettingsPopup::onToggleRecordBtn)
             );
-            watchBtn->setPosition({ rightX + colW - 26.0f, topY });
-            menu->addChild(watchBtn);
+            recBtn->setPosition({ rightX + colW - 14.0f, topY + 2.0f });
+            menu->addChild(recBtn);
 
             addLabel(m_contentNode, "Mode:", leftX, topY - 30.0f, 0.34f, "goldFont.fnt");
             bool isAuto = (m_cfg.mode == CounterMode::Auto);
@@ -305,44 +325,54 @@ private:
         }
         else if (m_activeTab == 1) {
             auto const& activeMac = MacroStore::get().active();
-            std::string activeStr = activeMac.empty()
-                ? "Active Macro: None (using Live Run)"
-                : fmt::format("Active: [{}] {} ({} clicks)", activeMac.sourceBot, activeMac.name, activeMac.clickCount());
-            addLabel(m_contentNode, activeStr, leftX, topY + 2.0f, 0.30f, "goldFont.fnt",
-                     activeMac.empty() ? ccc3(210, 215, 225) : ccc3(120, 245, 155));
+            bool hasMac = !activeMac.empty();
+            std::string activeStr = !hasMac
+                ? "Macro: None (record or load below)"
+                : fmt::format("[{}] {} ({}c)", activeMac.sourceBot, activeMac.name, activeMac.clickCount());
+            if (activeStr.size() > 38) activeStr = activeStr.substr(0, 35) + "...";
+            addLabel(m_contentNode, activeStr, leftX, topY + 3.0f, 0.29f, "goldFont.fnt",
+                     hasMac ? ccc3(120, 245, 155) : ccc3(210, 215, 225));
+
+            auto* recBtn = CCMenuItemSpriteExtra::create(
+                makeMiniBtn(m_isRecordingNow ? "STOP & SAVE" : "REC MACRO", 76.0f, 20.0f, m_isRecordingNow ? "GJ_button_06.png" : "GJ_button_01.png"),
+                this, menu_selector(SettingsPopup::onToggleRecordBtn)
+            );
+            recBtn->setPosition({ rightX + colW - 146.0f, topY + 3.0f });
+            menu->addChild(recBtn);
 
             auto* refreshBtn = CCMenuItemSpriteExtra::create(
-                makeMiniBtn("Refresh", 56.0f, 20.0f, "GJ_button_02.png"),
+                makeMiniBtn("Refresh", 54.0f, 20.0f, "GJ_button_02.png"),
                 this, menu_selector(SettingsPopup::onMacroRefreshBtn)
             );
-            refreshBtn->setPosition({ rightX + colW - 86.0f, topY + 2.0f });
+            refreshBtn->setPosition({ rightX + colW - 78.0f, topY + 3.0f });
             menu->addChild(refreshBtn);
 
             auto* clearBtn = CCMenuItemSpriteExtra::create(
-                makeMiniBtn("Clear", 48.0f, 20.0f, activeMac.empty() ? "GJ_button_04.png" : "GJ_button_06.png"),
+                makeMiniBtn("Clear", 44.0f, 20.0f, hasMac ? "GJ_button_06.png" : "GJ_button_04.png"),
                 this, menu_selector(SettingsPopup::onMacroClearBtn)
             );
-            clearBtn->setPosition({ rightX + colW - 28.0f, topY + 2.0f });
+            clearBtn->setPosition({ rightX + colW - 24.0f, topY + 3.0f });
             menu->addChild(clearBtn);
 
-            constexpr int kPerPage = 5;
+            constexpr int kPerPage = 4;
             int total = static_cast<int>(m_discoveredMacros.size());
             int totalPages = std::max(1, (total + kPerPage - 1) / kPerPage);
             m_macroPage = std::clamp(m_macroPage, 0, totalPages - 1);
 
             if (total == 0) {
                 auto* emptyLbl = CCLabelBMFont::create(
-                    "No macros found in Silicate / xdBot / Eclipse / FWC folders.\n"
-                    "Record a macro in Silicate (.slc), xdBot (.gdr/.xd), or Eclipse (.gdr2), then press Refresh.",
+                    "No macros found. Press REC MACRO to record your own run,
+"
+                    "or save a macro in Silicate (.slc), xdBot (.gdr2/.xd), or Eclipse.",
                     "chatFont.fnt"
                 );
                 emptyLbl->setScale(0.54f);
                 emptyLbl->setColor(ccc3(210, 218, 232));
-                emptyLbl->setPosition({ kPanelW * 0.5f, topY - 76.0f });
+                emptyLbl->setPosition({ kPanelW * 0.5f, topY - 58.0f });
                 m_contentNode->addChild(emptyLbl, 3);
             } else {
                 int startIdx = m_macroPage * kPerPage;
-                float rowY = topY - 26.0f;
+                float rowY = topY - 24.0f;
                 for (int r = 0; r < kPerPage && (startIdx + r) < total; ++r) {
                     auto const& dm = m_discoveredMacros[static_cast<size_t>(startIdx + r)];
                     ccColor3B tagCol = ccc3(120, 220, 255);
@@ -357,7 +387,7 @@ private:
                     addLabel(m_contentNode, shortName, leftX + 46.0f, rowY, 0.30f, "bigFont.fnt",
                              dm.matchesLevel ? ccc3(135, 250, 155) : ccc3(240, 244, 250));
 
-                    bool isLoaded = (!activeMac.empty() && activeMac.path == dm.fullPath);
+                    bool isLoaded = (hasMac && activeMac.path == dm.fullPath);
                     auto* loadBtn = CCMenuItemSpriteExtra::create(
                         makeMiniBtn(isLoaded ? "LOADED" : "LOAD", 56.0f, 19.0f, isLoaded ? "GJ_button_01.png" : "GJ_button_02.png"),
                         this, menu_selector(SettingsPopup::onMacroLoadBtn)
@@ -365,41 +395,67 @@ private:
                     loadBtn->setTag(startIdx + r);
                     loadBtn->setPosition({ rightX + colW - 28.0f, rowY });
                     menu->addChild(loadBtn);
-                    rowY -= 25.0f;
+                    rowY -= 24.0f;
                 }
             }
 
+            // FBMOD-style quick action bar at bottom of Macro tab
+            float actY = 58.0f;
+            bool canAnalyze = hasMac || m_recordedRunClicks > 0;
+            auto* qFast = CCMenuItemSpriteExtra::create(
+                makeMiniBtn("ANALYZE FAST (+-6f)", 132.0f, 22.0f, canAnalyze ? "GJ_button_01.png" : "GJ_button_04.png"),
+                this, menu_selector(SettingsPopup::onQuickAnalyzeBtn)
+            );
+            qFast->setTag(0);
+            qFast->setPosition({ leftX + 68.0f, actY });
+            menu->addChild(qFast);
+
+            auto* qDeep = CCMenuItemSpriteExtra::create(
+                makeMiniBtn("ANALYZE DEEP (+-12f)", 140.0f, 22.0f, canAnalyze ? "GJ_button_02.png" : "GJ_button_04.png"),
+                this, menu_selector(SettingsPopup::onQuickAnalyzeBtn)
+            );
+            qDeep->setTag(1);
+            qDeep->setPosition({ leftX + 214.0f, actY });
+            menu->addChild(qDeep);
+
+            auto* qWatch = CCMenuItemSpriteExtra::create(
+                makeMiniBtn("WATCH MACRO", 96.0f, 22.0f, hasMac ? "GJ_button_05.png" : "GJ_button_04.png"),
+                this, menu_selector(SettingsPopup::onWatchMacroBtn)
+            );
+            qWatch->setPosition({ rightX + colW - 50.0f, actY });
+            menu->addChild(qWatch);
+
             if (totalPages > 1) {
                 auto* prevB = CCMenuItemSpriteExtra::create(
-                    makeMiniBtn("< Prev", 52.0f, 19.0f, "GJ_button_04.png"),
+                    makeMiniBtn("< Prev", 52.0f, 18.0f, "GJ_button_04.png"),
                     this, menu_selector(SettingsPopup::onMacroPageBtn)
                 );
                 prevB->setTag(-1);
-                prevB->setPosition({ leftX + 28.0f, 38.0f });
+                prevB->setPosition({ leftX + 28.0f, 32.0f });
                 menu->addChild(prevB);
 
                 auto* pgLbl = CCLabelBMFont::create(fmt::format("Page {} / {}", m_macroPage + 1, totalPages).c_str(), "goldFont.fnt");
-                pgLbl->setScale(0.46f);
-                pgLbl->setPosition({ kPanelW * 0.5f, 38.0f });
+                pgLbl->setScale(0.44f);
+                pgLbl->setPosition({ kPanelW * 0.5f, 32.0f });
                 m_contentNode->addChild(pgLbl, 3);
 
                 auto* nextB = CCMenuItemSpriteExtra::create(
-                    makeMiniBtn("Next >", 52.0f, 19.0f, "GJ_button_04.png"),
+                    makeMiniBtn("Next >", 52.0f, 18.0f, "GJ_button_04.png"),
                     this, menu_selector(SettingsPopup::onMacroPageBtn)
                 );
                 nextB->setTag(1);
-                nextB->setPosition({ rightX + colW - 28.0f, 38.0f });
+                nextB->setPosition({ rightX + colW - 28.0f, 32.0f });
                 menu->addChild(nextB);
+            } else {
+                auto* mHint = CCLabelBMFont::create(
+                    "Auto-scans Silicate (.slc), xdBot / Eclipse (.gdr2) & FWC recorded macros.",
+                    "chatFont.fnt"
+                );
+                mHint->setScale(0.45f);
+                mHint->setColor(ccc3(185, 195, 212));
+                mHint->setPosition({ kPanelW * 0.5f, 28.0f });
+                m_contentNode->addChild(mHint, 3);
             }
-
-            auto* mHint = CCLabelBMFont::create(
-                "Auto-scans Silicate (peony.silicate), xdBot (zilko.xdbot), Eclipse & FWC macros/ folders.",
-                "chatFont.fnt"
-            );
-            mHint->setScale(0.45f);
-            mHint->setColor(ccc3(185, 195, 212));
-            mHint->setPosition({ kPanelW * 0.5f, 20.0f });
-            m_contentNode->addChild(mHint, 3);
         }
         else if (m_activeTab == 2) {
             addCheckboxRow(m_contentNode, menu, "Top-Left Table", m_cfg.showTierTable, 110, leftX, topY);
@@ -922,6 +978,23 @@ private:
         }
     }
 
+    void onAnalyzeDepthBtn(CCObject* sender) {
+        m_cfg.analyzeDepth = (static_cast<CCNode*>(sender)->getTag() == 0) ? "fast" : "deep";
+        applyAndRebuild();
+    }
+
+    void onToggleRecordBtn(CCObject*) {
+        auto cb = m_onToggleRecordMacro;
+        this->removeFromParent();
+        if (cb) cb();
+    }
+
+    void onQuickAnalyzeBtn(CCObject* sender) {
+        m_cfg.analyzeDepth = (static_cast<CCNode*>(sender)->getTag() == 0) ? "fast" : "deep";
+        notifyLive();
+        onStartScanBtn(sender);
+    }
+
     void onMacroPageBtn(CCObject* sender) {
         m_macroPage += static_cast<CCNode*>(sender)->getTag();
         rebuildContent();
@@ -1208,10 +1281,12 @@ private:
         std::function<void()> onChanged,
         std::function<void()> onStartExactScan,
         std::function<void()> onWatchMacro,
+        std::function<void()> onToggleRecordMacro,
         std::function<void()> onToggleRender,
         std::string const& levelName,
         size_t recordedClicks,
         bool isRenderingNow,
+        bool isRecordingNow,
         float playerX,
         float playerY
     ) {
@@ -1227,11 +1302,13 @@ private:
         m_onChanged = std::move(onChanged);
         m_onStartExactScan = std::move(onStartExactScan);
         m_onWatchMacro = std::move(onWatchMacro);
+        m_onToggleRecordMacro = std::move(onToggleRecordMacro);
         m_onToggleRender = std::move(onToggleRender);
         m_levelName = levelName;
         m_discoveredMacros = MacroStore::get().discoverMacros(m_levelName);
         m_recordedRunClicks = recordedClicks;
         m_isRenderingNow = isRenderingNow;
+        m_isRecordingNow = isRecordingNow;
         m_currentPlayerX = playerX;
         m_currentPlayerY = playerY;
 
@@ -1263,15 +1340,17 @@ public:
         std::function<void()> onChanged,
         std::function<void()> onStartExactScan,
         std::function<void()> onWatchMacro,
+        std::function<void()> onToggleRecordMacro,
         std::function<void()> onToggleRender,
         std::string const& levelName,
         size_t recordedClicks,
         bool isRenderingNow,
+        bool isRecordingNow,
         float playerX,
         float playerY
     ) {
         auto* ret = new SettingsPopup();
-        if (ret && ret->setup(std::move(onChanged), std::move(onStartExactScan), std::move(onWatchMacro), std::move(onToggleRender), levelName, recordedClicks, isRenderingNow, playerX, playerY)) {
+        if (ret && ret->setup(std::move(onChanged), std::move(onStartExactScan), std::move(onWatchMacro), std::move(onToggleRecordMacro), std::move(onToggleRender), levelName, recordedClicks, isRenderingNow, isRecordingNow, playerX, playerY)) {
             ret->autorelease();
             return ret;
         }

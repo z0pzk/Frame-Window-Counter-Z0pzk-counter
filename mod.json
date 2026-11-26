@@ -8,9 +8,9 @@
     },
     "id": "z0pzk.frame-window-counter",
     "name": "Frame Window Counter",
-    "version": "v11.3.0",
+    "version": "v11.4.0",
     "developer": "z0pzk",
-    "description": "Frame & CBF Window Counter v10.3 (Windows + Android64 Mobile Port) — exact GD 2.2 physics with Gravity Portals/Pads/Sawblades, Ball/BlueOrb fix, full-level Scan Exact, mobile-safe HUD layout, and per-tier sounds.",
+    "description": "Frame & CBF Window Counter v11.4 (Windows + Android64) — Silicate (.slc) / xdBot / Eclipse (.gdr2) macro support, built-in macro recorder, Fast (±6f) & Deep (±12f) exact analyzer, and FBMOD-style UI.",
     "resources": {
         "files": [
             "resources/*.wav",
@@ -233,6 +233,16 @@
                 "8M",
                 "12M",
                 "25M"
+            ]
+        },
+        "analyze-depth": {
+            "type": "string",
+            "name": "Analyze Depth",
+            "description": "Fast (±6 frames) or Deep (±12 frames) window scan.",
+            "default": "deep",
+            "one-of": [
+                "fast",
+                "deep"
             ]
         }
     }
