@@ -167,22 +167,22 @@ template <typename PL>
 bool safeCreateAndStoreCheckpoint(PL* pl) {
     if (!pl) return false;
     size_t before = safeCheckpointCount(pl);
-    if constexpr (requires { pl->markCheckpoint(); }) {
-        pl->markCheckpoint();
-        if constexpr (requires { pl->m_checkpointArray; }) {
-            if (safeCheckpointCount(pl) > before) return true;
-        } else {
-            return true;
-        }
-    }
     if constexpr (requires { pl->createCheckpoint(); pl->storeCheckpoint(pl->createCheckpoint()); }) {
         if (auto* cp = pl->createCheckpoint()) {
             pl->storeCheckpoint(cp);
             if constexpr (requires { pl->m_checkpointArray; }) {
-                return safeCheckpointCount(pl) > before;
+                if (safeCheckpointCount(pl) > before) return true;
+            } else {
+                return true;
             }
-            return true;
         }
+    }
+    if constexpr (requires { pl->markCheckpoint(); }) {
+        pl->markCheckpoint();
+        if constexpr (requires { pl->m_checkpointArray; }) {
+            return safeCheckpointCount(pl) > before;
+        }
+        return true;
     }
     return false;
 }
@@ -321,6 +321,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         float bestAnchorEndX = 0.0f;
         CCPoint baseClickPos = ccp(0.0f, 30.0f);
         bool targetFiredThisProbe = false;
+        bool baselineSurvived = false;
 
         int currentDelta = 0;
         bool binSearching = false;
@@ -972,15 +973,27 @@ class $modify(FWCPlayLayer, PlayLayer) {
             f.replayFired[j] = true;
         }
         if (f.hasActiveCp && safeCheckpointCount(this) > 0 && !f.cpStack.empty()) {
-            f.scanSimTick = f.cpStack.back().simTick;
+            auto const cpSnap = f.cpStack.back();
+            f.scanSimTick = cpSnap.simTick;
             PlayLayer::resetLevel();
-            if (f.cpHoldingP1) {
-                f.simHoldingP1 = true;
-                runBaseBtn(true, 1, true);
-            }
-            if (f.cpHoldingP2) {
-                f.simHoldingP2 = true;
-                runBaseBtn(true, 1, false);
+            if (m_player1 && cpSnap.worldX > 120.0f && m_player1->getPositionX() < 40.0f) {
+                // Checkpoint did not restore; reset cleanly to 0% state to avoid desync
+                f.hasActiveCp = false;
+                f.cpStack.clear();
+                f.cpStartIdx = 0;
+                f.scanSimTick = 0;
+                f.cpHoldingP1 = false;
+                f.cpHoldingP2 = false;
+                std::fill(f.replayFired.begin(), f.replayFired.end(), false);
+            } else {
+                if (f.cpHoldingP1) {
+                    f.simHoldingP1 = true;
+                    runBaseBtn(true, 1, true);
+                }
+                if (f.cpHoldingP2) {
+                    f.simHoldingP2 = true;
+                    runBaseBtn(true, 1, false);
+                }
             }
         } else {
             f.hasActiveCp = false;
@@ -1195,12 +1208,12 @@ class $modify(FWCPlayLayer, PlayLayer) {
             return false;
         };
 
-        while (f.isScanning && stepsDone < 900) {
+        while (f.isScanning && stepsDone < 1600) {
             if ((stepsDone & 15) == 15) {
                 auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - tStart
                 ).count();
-                if (elapsedMs >= 13) break;
+                if (elapsedMs >= 22) break;
             }
             stepsDone++;
 
@@ -1225,14 +1238,26 @@ class $modify(FWCPlayLayer, PlayLayer) {
             size_t i = f.scanClickIdx;
             float curX = m_player1 ? m_player1->getPositionX() : 0.0f;
             bool targetIsWave = f.scanClicks[i].isWave;
-            int kLookaheadTicks = targetIsWave ? 56 : 120;
+            int maxLookahead = targetIsWave ? 56 : 112;
             int minCheckTicks = targetIsWave ? 10 : 18;
+            int kLookaheadTicks = maxLookahead;
             float nextClickStopX = 1e9f;
-            for (size_t nxt = i + 1; nxt < f.scanClicks.size(); ++nxt) {
-                if ((f.scanClicks[nxt].down || f.scanClicks[nxt].releaseMatters) &&
-                    f.scanClicks[nxt].x > f.scanClicks[i].x + 12.0f) {
-                    nextClickStopX = f.scanClicks[nxt].x + (targetIsWave ? 4.0f : 14.0f);
-                    break;
+            if (f.scanByTick) {
+                for (size_t nxt = i + 1; nxt < f.scanClicks.size(); ++nxt) {
+                    if ((f.scanClicks[nxt].down || f.scanClicks[nxt].releaseMatters) &&
+                        f.scanClicks[nxt].tick240 > f.scanClicks[i].tick240 + 4) {
+                        int dtNext = static_cast<int>(f.scanClicks[nxt].tick240 - f.scanClicks[i].tick240);
+                        kLookaheadTicks = std::clamp(dtNext + 18, minCheckTicks, maxLookahead);
+                        break;
+                    }
+                }
+            } else {
+                for (size_t nxt = i + 1; nxt < f.scanClicks.size(); ++nxt) {
+                    if ((f.scanClicks[nxt].down || f.scanClicks[nxt].releaseMatters) &&
+                        f.scanClicks[nxt].x > f.scanClicks[i].x + 16.0f) {
+                        nextClickStopX = f.scanClicks[nxt].x + (targetIsWave ? 2.0f : 6.0f);
+                        break;
+                    }
                 }
             }
 
@@ -1436,9 +1461,11 @@ class $modify(FWCPlayLayer, PlayLayer) {
                     if (f.baseClickTick < 0) f.baseClickTick = f.probeTick;
 
                     if (didDie() && !safeHasCompleted(this)) {
+                        f.baselineSurvived = false;
                         f.anchorSearchIdx = 0;
                         f.scanPhase = ScanPhase::FindAnchor;
                     } else {
+                        f.baselineSurvived = true;
                         f.scanPhase = ScanPhase::TestSkip;
                     }
                     resetProbeState(runBaseBtn);
@@ -1446,9 +1473,15 @@ class $modify(FWCPlayLayer, PlayLayer) {
             }
             else if (f.scanPhase == ScanPhase::FindAnchor) {
                 if (f.anchorSearchIdx >= 14) {
-                    f.baseClickTick = std::max(0, f.baseClickTick + f.anchorDelta);
-                    f.baseEndX = f.bestAnchorEndX;
-                    f.scanPhase = ScanPhase::TestSkip;
+                    // Baseline AND all 14 anchor offsets died: never emit a fake 1.00!
+                    if (popCheckpointFallback()) {
+                        f.approachNudgeTarget = 0;
+                        f.approachRetryStep = 0;
+                        f.scanPhase = ScanPhase::ApproachCheckpoint;
+                    } else {
+                        f.diagFail++;
+                        advanceScanToNextClick();
+                    }
                     resetProbeState(runBaseBtn);
                     continue;
                 }
@@ -1479,6 +1512,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 if (didDie() || doneTicks || safeHasCompleted(this)) {
                     float endX = postX;
                     if (!didDie() || safeHasCompleted(this)) {
+                        f.baselineSurvived = true;
                         f.baseClickTick = targetTick;
                         f.baseEndX = endX;
                         f.scanClicks[i].x = f.baseClickPos.x;
@@ -1549,7 +1583,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
                 if (didDie() || doneTicks || safeHasCompleted(this)) {
                     float endX = postX;
                     float reqEndX = std::min(f.baseEndX - 10.0f, nextClickStopX - 6.0f);
-                    bool survived = !didDie() && (endX >= reqEndX);
+                    bool survived = !didDie() && (safeHasCompleted(this) || endX >= reqEndX);
 
                     if (f.scanPhase == ScanPhase::TestLate) {
                         int d = f.currentDelta;
