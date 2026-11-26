@@ -80,6 +80,18 @@ inline bool readLE(std::vector<uint8_t> const& buf, size_t& pos, T& out) {
     return readBytes(buf, pos, &out, sizeof(T));
 }
 
+template <typename T>
+inline bool readBE(std::vector<uint8_t> const& buf, size_t& pos, T& out) {
+    if (pos + sizeof(T) > buf.size()) return false;
+    uint8_t tmp[sizeof(T)];
+    for (size_t i = 0; i < sizeof(T); ++i) {
+        tmp[sizeof(T) - 1 - i] = buf[pos + i];
+    }
+    std::memcpy(&out, tmp, sizeof(T));
+    pos += sizeof(T);
+    return true;
+}
+
 inline bool readVarint(std::vector<uint8_t> const& buf, size_t& pos, uint64_t& out) {
     out = 0;
     int shift = 0;
@@ -105,7 +117,7 @@ inline bool readGdrString(std::vector<uint8_t> const& buf, size_t& pos, std::str
 // 1. GDR2 Binary Format Parser (Eclipse Bot, xdBot v2, MegaHack)
 //    Spec: https://github.com/maxnut/GDReplayFormat (branch gdr2)
 // =========================================================================
-inline bool parseGDR2(std::vector<uint8_t> const& buf, LoadedMacro& out) {
+inline bool parseGDR2Impl(std::vector<uint8_t> const& buf, LoadedMacro& out, bool beFloatHeader) {
     if (buf.size() < 16) return false;
     if (buf[0] != 'G' || buf[1] != 'D' || buf[2] != 'R') return false;
 
@@ -113,27 +125,46 @@ inline bool parseGDR2(std::vector<uint8_t> const& buf, LoadedMacro& out) {
     uint64_t version = 0;
     std::string inputTag;
     if (!readVarint(buf, pos, version)) return false;
+    if (version == 0 || version > 16) return false;
     if (!readGdrString(buf, pos, inputTag)) return false;
 
     std::string author, desc, botName, levelName;
-    uint64_t duration = 0, gameVer = 0, framerate = 240, seed = 0, coins = 0, botVer = 0, levelId = 0, extSize = 0;
+    uint64_t gameVer = 0, seed = 0, coins = 0, botVer = 0, levelId = 0, extSize = 0;
+    double fps = 240.0;
     uint8_t ldm = 0, platformer = 0;
 
     if (!readGdrString(buf, pos, author)) return false;
     if (!readGdrString(buf, pos, desc)) return false;
-    if (!readVarint(buf, pos, duration)) return false;
-    if (!readVarint(buf, pos, gameVer)) return false;
-    if (!readVarint(buf, pos, framerate)) return false;
+
+    if (beFloatHeader) {
+        float durF = 0.0f;
+        double fpsD = 240.0;
+        if (!readBE(buf, pos, durF)) return false;
+        if (!std::isfinite(durF) || durF < -1.0f || durF > 1e7f) return false;
+        if (!readVarint(buf, pos, gameVer)) return false;
+        if (!readBE(buf, pos, fpsD)) return false;
+        if (!std::isfinite(fpsD) || fpsD < 10.0 || fpsD > 100000.0) return false;
+        fps = fpsD;
+    } else {
+        uint64_t durationV = 0, fpsV = 240;
+        if (!readVarint(buf, pos, durationV)) return false;
+        if (!readVarint(buf, pos, gameVer)) return false;
+        if (!readVarint(buf, pos, fpsV)) return false;
+        if (fpsV < 10 || fpsV > 100000) return false;
+        fps = static_cast<double>(fpsV);
+    }
+
     if (!readVarint(buf, pos, seed)) return false;
     if (!readVarint(buf, pos, coins)) return false;
     if (!readLE(buf, pos, ldm)) return false;
     if (!readLE(buf, pos, platformer)) return false;
+    if (ldm > 1 || platformer > 1) return false;
     if (!readGdrString(buf, pos, botName)) return false;
     if (!readVarint(buf, pos, botVer)) return false;
     if (!readVarint(buf, pos, levelId)) return false;
     if (!readGdrString(buf, pos, levelName)) return false;
     if (!readVarint(buf, pos, extSize)) return false;
-    if (pos + static_cast<size_t>(extSize) > buf.size()) return false;
+    if (extSize > buf.size() - pos) return false;
     pos += static_cast<size_t>(extSize);
 
     // Death frames
@@ -145,13 +176,12 @@ inline bool parseGDR2(std::vector<uint8_t> const& buf, LoadedMacro& out) {
         if (!readVarint(buf, pos, dummy)) return false;
     }
 
-    // Inputs
+    // Inputs (all P1 inputs first, then all P2 inputs)
     uint64_t inputCount = 0, p1Count = 0;
     if (!readVarint(buf, pos, inputCount)) return false;
     if (!readVarint(buf, pos, p1Count)) return false;
-    if (inputCount > 2000000 || p1Count > inputCount) return false;
+    if (inputCount == 0 || inputCount > 2000000 || p1Count > inputCount) return false;
 
-    double fps = (framerate >= 30 && framerate <= 100000) ? static_cast<double>(framerate) : 240.0;
     out.sourceFps = fps;
     if (!botName.empty() && out.sourceBot.empty()) out.sourceBot = botName;
     out.inputs.clear();
@@ -164,12 +194,12 @@ inline bool parseGDR2(std::vector<uint8_t> const& buf, LoadedMacro& out) {
 
     for (uint64_t i = 0; i < inputCount; ++i) {
         uint64_t packed = 0;
-        if (!readVarint(buf, pos, packed)) break;
+        if (!readVarint(buf, pos, packed)) return false;
 
         if (hasInputExt) {
             uint64_t iExtSize = 0;
-            if (!readVarint(buf, pos, iExtSize)) break;
-            if (pos + static_cast<size_t>(iExtSize) > buf.size()) break;
+            if (!readVarint(buf, pos, iExtSize)) return false;
+            if (iExtSize > buf.size() - pos) return false;
             pos += static_cast<size_t>(iExtSize);
         }
 
@@ -203,6 +233,14 @@ inline bool parseGDR2(std::vector<uint8_t> const& buf, LoadedMacro& out) {
         return a.tick240 < b.tick240;
     });
     return !out.inputs.empty();
+}
+
+inline bool parseGDR2(std::vector<uint8_t> const& buf, LoadedMacro& out) {
+    // Official libGDR2 (xdBot, Eclipse, MegaHack) writes duration as 4-byte BE float
+    // and framerate as 8-byte BE double. Fallback to varint header for legacy spec files.
+    if (parseGDR2Impl(buf, out, true)) return true;
+    out.inputs.clear();
+    return parseGDR2Impl(buf, out, false);
 }
 
 // =========================================================================
